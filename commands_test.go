@@ -11,7 +11,7 @@ func TestIgnoredFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := ignoredFlags(f, "config", "log-file", "verbose", "quiet")
-	want := []string{"--repo", "--interval", "--randomize-start"} // help order
+	want := []string{"--interval", "--repo", "--randomize-start"} // order typed
 	if !slices.Equal(got, want) {
 		t.Errorf("ignoredFlags = %v, want %v", got, want)
 	}

@@ -144,7 +144,7 @@ func cmdService(app string, args []string) error {
 }
 
 // ignoredFlags lists the flags given on the command line, other than keep,
-// in the order they appear in help.
+// in the order they were typed.
 func ignoredFlags(f *flags, keep ...string) []string {
 	var out []string
 	f.fs.Visit(func(fl *pflag.Flag) {
