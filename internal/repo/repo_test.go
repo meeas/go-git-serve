@@ -2,8 +2,12 @@ package repo
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,7 +144,102 @@ func TestFailedCloneKeepsCache(t *testing.T) {
 		t.Errorf("cache destroyed by failed re-clone: %q", got)
 	}
 	entries, _ := os.ReadDir(filepath.Dir(dir))
-	if len(entries) != 1 {
-		t.Errorf("temporary clone dirs left behind: %v", entries)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".clone-") {
+			t.Errorf("temporary clone dir left behind: %s", e.Name())
+		}
+	}
+}
+
+func TestRecloneRefusedWhileServed(t *testing.T) {
+	ctx := context.Background()
+	up := newUpstream(t)
+	up.commit(map[string]string{"index.html": "v1"})
+	dir := filepath.Join(t.TempDir(), "repo")
+	s := &Syncer{URL: up.dir, Dir: dir}
+	if _, err := s.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	serving, err := s.HoldServing(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// In-place updates are fine while serving...
+	if _, err := s.Sync(ctx); err != nil {
+		t.Fatalf("update while served: %v", err)
+	}
+	// ...but replacing the checkout is not.
+	other := newUpstream(t)
+	other.commit(map[string]string{"index.html": "other"})
+	s2 := &Syncer{URL: other.dir, Dir: dir}
+	if _, err := s2.Sync(ctx); !errors.Is(err, ErrInUse) {
+		t.Fatalf("re-clone while served: %v", err)
+	}
+	if got := read(t, filepath.Join(dir, "index.html")); got != "v1" {
+		t.Fatalf("checkout replaced while served: %q", got)
+	}
+
+	serving.Release()
+	if _, err := s2.Sync(ctx); err != nil {
+		t.Fatalf("re-clone after serving stopped: %v", err)
+	}
+	if got := read(t, filepath.Join(dir, "index.html")); got != "other" {
+		t.Errorf("index = %q", got)
+	}
+	// The re-clone released its exclusive hold, so serving can resume.
+	if l, err := s2.HoldServing(ctx, 0); err != nil {
+		t.Errorf("HoldServing after re-clone: %v", err)
+	} else {
+		l.Release()
+	}
+}
+
+func TestConcurrentSyncsAreSerialised(t *testing.T) {
+	ctx := context.Background()
+	up := newUpstream(t)
+	up.commit(map[string]string{"index.html": "v1"})
+	dir := filepath.Join(t.TempDir(), "repo")
+	if _, err := (&Syncer{URL: up.dir, Dir: dir}).Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	up.commit(map[string]string{"index.html": "v2"})
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := (&Syncer{URL: up.dir, Dir: dir}).Update(ctx)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent update: %v", err)
+		}
+	}
+	if got := read(t, filepath.Join(dir, "index.html")); got != "v2" {
+		t.Errorf("index = %q", got)
+	}
+}
+
+func TestBusyRepoLockGivesUp(t *testing.T) {
+	ctx := context.Background()
+	up := newUpstream(t)
+	up.commit(map[string]string{"index.html": "v1"})
+	dir := filepath.Join(t.TempDir(), "repo")
+	s := &Syncer{URL: up.dir, Dir: dir, LockWait: 200 * time.Millisecond}
+	held, err := s.lockRepo(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	_, err = s.Sync(ctx)
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("process %d", os.Getpid())) {
+		t.Fatalf("expected busy error naming this process, got %v", err)
 	}
 }

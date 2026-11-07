@@ -129,6 +129,29 @@ while logged out. Windows services run as LocalSystem, which cannot read your
 keychain: use `token_file` and absolute paths. Logs go to
 `<cache dir>/<name>/service.log`.
 
+## Running more than one copy
+
+Copies of the same app (same executable name) share one config, cache and
+address, and coordinate with each other:
+
+- **Starting it again** while it is already running (in a terminal or as a
+  service) just opens the running site and exits; it does not pull or serve
+  a second time. A second `--daemon` copy exits with an error instead.
+- **Updates never overlap.** Clones, pulls and periodic updates take a lock
+  on the checkout; another copy waits up to 30 seconds, then reports the
+  process ID that holds it.
+- **The checkout is never replaced while it is being served.** If `url` or
+  `branch` changed, the re-clone is refused until the running copy stops
+  (`sync` exits with an error; `run` serves the cached copy and says so).
+- **Crashes leave nothing stuck.** Locks are operating-system file locks
+  (`flock` / `LockFileEx`), released automatically when a process exits in
+  any way; the leftover `repo.lock` and `serve.lock` files are harmless.
+- If the address is taken by a different app or another program, the
+  program exits with an error before touching the checkout.
+
+While a copy is still cloning or pulling, its address shows a short
+"starting" page that refreshes itself.
+
 ## Security
 
 - Serves only on `127.0.0.1` by default; never serves `.git`, nor files

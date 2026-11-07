@@ -19,7 +19,9 @@ it in its own window. This document records the decisions behind it.
 | Commands | `run` (default), `init`, `sync`, `auth`, `service`, `version` | Small surface; flags via `spf13/pflag` (GNU style) |
 | Daemon | `--daemon` = unattended foreground run; `service` delegates backgrounding to systemd / launchd / Windows SCM via `kardianos/service` | Go cannot fork reliably (especially on Windows); service managers give restart, boot start and logging |
 | Failed pull | Serve the cached copy with a warning | The app stays usable offline |
-| Port in use | Exit with an error (code 1) | Predictable URL; avoids two copies racing |
+| Port in use | Exit with an error (code 1), checked before touching the checkout | Predictable URL; avoids two copies racing |
+| Same app already running | Detected by requesting the address (responses carry `X-Go-Git-Serve: <app>`): open it and exit 0; `--daemon` exits 1 | The user wanted the site, not a second server |
+| Concurrent copies | OS file locks next to the checkout: `repo.lock` (exclusive, every clone/fetch/reset, 30 s wait, holder PID in the error) and `serve.lock` (shared while serving; a re-clone needs it exclusively and is refused otherwise) | Prevents interleaved git writes and deleting files a running copy serves; released by the OS on crash, so never stale |
 | Platforms | windows, linux, darwin x amd64, arm64; `CGO_ENABLED=0` | Cross-compile everything from one machine; static Linux binaries |
 | Releases | GitHub Actions: tests on Linux/Windows/macOS; GoReleaser on `v*` tags; unsigned | Signing needs paid certificates; can be added later |
 | Browser | `app` mode by default: Chromium-family `--app` window with a dedicated profile; closing it stops the program. Fallback to the default browser; `none` prints the URL | Matches the original "self-contained window" idea without lorca (archived) or cgo webviews |
@@ -34,11 +36,17 @@ internal/auth      auth methods, host key verification, keychain
 internal/repo      clone / fetch + hard reset of the cached checkout
 internal/server    HTTP handler (.git blocking, host check), URL helpers
 internal/browser   app window / default browser launching
+internal/lock      crash-safe inter-process file locks (flock / LockFileEx)
 internal/svc       OS service integration
 internal/logx      levelled logging (timestamps in daemon mode)
 ```
 
 ## Behaviour details
+
+- **Start-up order.** Probe the address (open the running copy if it is this
+  app) → listen and serve a "starting" page → sync under `repo.lock` → take
+  `serve.lock` shared → serve the files. Claiming the address before syncing
+  means a second copy recognises the first even during a long clone.
 
 - **Sync.** First run clones (single branch) into a temporary folder and
   moves it into place, so a failed clone never destroys a working cache. Later

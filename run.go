@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -65,7 +64,7 @@ func cmdRun(app string, args []string) error {
 
 	if f.daemon {
 		return svc.Run(svc.Config{AppName: app}, func(ctx context.Context) error {
-			return serve(ctx, app, cfg, paths, f.offline, nil)
+			return serve(ctx, runOpts{app: app, cfg: cfg, paths: paths, offline: f.offline, daemon: true})
 		})
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -74,7 +73,7 @@ func cmdRun(app string, args []string) error {
 	if interactive {
 		prompt = promptSecret
 	}
-	return serve(ctx, app, cfg, paths, f.offline, prompt)
+	return serve(ctx, runOpts{app: app, cfg: cfg, paths: paths, offline: f.offline, prompt: prompt})
 }
 
 // gitProgress is where clone/fetch progress goes: the terminal when
@@ -101,21 +100,66 @@ func newSyncer(app string, cfg config.Config, paths config.Paths, prompt auth.Pr
 	}, nil
 }
 
-// serve syncs the repository, serves it, and blocks until ctx is cancelled
-// or the app window is closed.
-func serve(ctx context.Context, app string, cfg config.Config, paths config.Paths, offline bool, prompt auth.PromptFunc) error {
+// runOpts carries what serve needs.
+type runOpts struct {
+	app     string
+	cfg     config.Config
+	paths   config.Paths
+	offline bool
+	daemon  bool
+	prompt  auth.PromptFunc // nil when no terminal is available
+}
+
+func (o runOpts) browserOptions() browser.Options {
+	return browser.Options{Mode: o.cfg.Browser.Mode, Path: o.cfg.Browser.Path, ProfileDir: o.paths.ProfileDir}
+}
+
+// serve claims the listen address, syncs the repository, serves it, and
+// blocks until ctx is cancelled or the app window is closed. If this app is
+// already running on the address, it opens that instead (or, as a daemon,
+// reports an error).
+func serve(ctx context.Context, o runOpts) error {
+	cfg, paths, app := o.cfg, o.paths, o.app
+
+	// 1. Before touching the checkout: is something already on our address?
+	if handled, err := checkRunning(ctx, o); handled {
+		return err
+	}
+
+	// 2. Claim the address. Until the content is ready, the site answers with
+	// a "starting" page that also identifies this app to other copies.
+	ln, err := net.Listen("tcp", cfg.Server.Listen)
+	if err != nil {
+		if handled, perr := checkRunning(ctx, o); handled { // lost a start-up race
+			return perr
+		}
+		return fmt.Errorf("cannot listen on %s: %w (choose another address with --listen)", cfg.Server.Listen, err)
+	}
+	if server.IsWildcard(cfg.Server.Listen) {
+		logx.Warnf("listening on all network interfaces: other machines can reach this site")
+	}
+	site := server.NewSite(app, server.AllowedHosts(cfg.Server.Listen))
+	srv := &http.Server{Handler: site, ReadHeaderTimeout: 10 * time.Second}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
+	url := server.URL(ln.Addr(), cfg.Server.Listen)
+
+	// 3. Bring the checkout up to date.
 	cached := &repo.Syncer{Dir: paths.RepoDir}
 	haveCache := cached.Exists()
-
 	var syncer *repo.Syncer
-	if offline {
+	if o.offline {
 		if !haveCache {
 			return fmt.Errorf("--offline: no cached copy at %s yet; run once without --offline", paths.RepoDir)
 		}
 		logx.Infof("Offline: serving the cached copy")
 	} else {
-		var err error
-		syncer, err = newSyncer(app, cfg, paths, prompt)
+		syncer, err = newSyncer(app, cfg, paths, o.prompt)
 		switch {
 		case err != nil && haveCache:
 			logx.Warnf("%v; serving the cached copy", err)
@@ -141,6 +185,13 @@ func serve(ctx context.Context, app string, cfg config.Config, paths config.Path
 		}
 	}
 
+	// 4. Mark the checkout as in use, so no other copy re-clones it under us.
+	hold, err := cached.HoldServing(ctx, syncTimeout)
+	if err != nil {
+		return err
+	}
+	defer hold.Release()
+
 	root, err := server.OpenRoot(filepath.Join(paths.RepoDir, cfg.Repo.Subdir))
 	if err != nil {
 		if cfg.Repo.Subdir != "" {
@@ -149,37 +200,21 @@ func serve(ctx context.Context, app string, cfg config.Config, paths config.Path
 		return err
 	}
 	defer root.Close()
+	site.SetFiles(root.FS())
 
-	ln, err := net.Listen("tcp", cfg.Server.Listen)
-	if err != nil {
-		return fmt.Errorf("cannot listen on %s: %w (is another program, or another copy of %s, using it? choose another address with --listen)",
-			cfg.Server.Listen, err, app)
+	if origin := cached.Origin(); origin != "" && origin != cfg.Repo.URL {
+		logx.Warnf("serving the cached copy of %s, not %s", origin, cfg.Repo.URL)
+		logx.Infof("Serving %s at %s", origin, url)
+	} else {
+		logx.Infof("Serving %s at %s", cfg.Repo.URL, url)
 	}
-	if server.IsWildcard(cfg.Server.Listen) {
-		logx.Warnf("listening on all network interfaces: other machines can reach this site")
-	}
-	srv := &http.Server{
-		Handler:           server.Handler(root.FS(), server.AllowedHosts(cfg.Server.Listen)),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.Serve(ln) }()
-
-	url := server.URL(ln.Addr(), cfg.Server.Listen)
-	logx.Infof("Serving %s at %s", cfg.Repo.URL, url)
-	if prompt != nil {
+	if o.prompt != nil {
 		logx.Infof("Press Ctrl+C to stop.")
 	}
-
 	if syncer != nil && cfg.Update.Interval.Duration > 0 {
 		go updateLoop(ctx, syncer, cfg.Update.Interval.Duration)
 	}
-
-	sess := browser.Open(url, browser.Options{
-		Mode:       cfg.Browser.Mode,
-		Path:       cfg.Browser.Path,
-		ProfileDir: paths.ProfileDir,
-	})
+	sess := browser.Open(url, o.browserOptions())
 
 	select {
 	case <-ctx.Done():
@@ -189,12 +224,30 @@ func serve(ctx context.Context, app string, cfg config.Config, paths config.Path
 	case err := <-serveErr:
 		return err
 	}
-	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
-		return err
-	}
 	return nil
+}
+
+// checkRunning probes the listen address. It returns handled=true when the
+// address is taken: by this app (opens it, or errors in daemon mode), by a
+// different go-git-serve app, or by another program (errors).
+func checkRunning(ctx context.Context, o runOpts) (handled bool, err error) {
+	listen := o.cfg.Server.Listen
+	res, other := server.Probe(ctx, listen, o.app)
+	url := server.URLFor(listen)
+	switch res {
+	case server.ProbeSelf:
+		if o.daemon {
+			return true, fmt.Errorf("%s is already running at %s", o.app, url)
+		}
+		logx.Infof("%s is already running at %s; opening it", o.app, url)
+		browser.Open(url, o.browserOptions())
+		return true, nil
+	case server.ProbeOtherApp:
+		return true, fmt.Errorf("%s is in use by another go-git-serve app (%s); choose another address with --listen", listen, other)
+	case server.ProbeForeign:
+		return true, fmt.Errorf("%s is in use by another program; choose another address with --listen", listen)
+	}
+	return false, nil
 }
 
 func logSync(res repo.Result) {

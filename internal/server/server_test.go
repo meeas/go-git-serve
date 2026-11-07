@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,7 +44,7 @@ func get(h http.Handler, method, host, path string) *httptest.ResponseRecorder {
 
 func TestHandler(t *testing.T) {
 	root, _ := setup(t)
-	h := Handler(root.FS(), AllowedHosts("127.0.0.1:8888"))
+	h := Handler("app", root.FS(), AllowedHosts("127.0.0.1:8888"))
 
 	tests := []struct {
 		name, method, host, path string
@@ -94,8 +95,55 @@ func TestAllowedHosts(t *testing.T) {
 	if len(got) != 1 || got[0] != "192.168.1.5" {
 		t.Errorf("got %v", got)
 	}
-	h := Handler(os.DirFS(t.TempDir()), AllowedHosts("[::1]:8888"))
+	h := Handler("app", os.DirFS(t.TempDir()), AllowedHosts("[::1]:8888"))
 	if rec := get(h, "GET", "[::1]:8888", "/"); rec.Code == http.StatusMisdirectedRequest {
 		t.Error("IPv6 loopback host rejected")
+	}
+}
+
+func TestStartingPageThenFiles(t *testing.T) {
+	root, _ := setup(t)
+	s := NewSite("app", AllowedHosts("127.0.0.1:8888"))
+	rec := get(s, "GET", "127.0.0.1:8888", "/")
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get(AppHeader) != "app" {
+		t.Fatalf("starting: %d %v", rec.Code, rec.Header())
+	}
+	if rec := get(s, "GET", "127.0.0.1:8888", "/.git/config"); rec.Code == 200 {
+		t.Fatal(".git served while starting")
+	}
+	s.SetFiles(root.FS())
+	if rec := get(s, "GET", "127.0.0.1:8888", "/"); rec.Code != 200 || rec.Body.String() != "hello" {
+		t.Fatalf("after SetFiles: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProbe(t *testing.T) {
+	ctx := t.Context()
+	listen := func(h http.Handler) string {
+		srv := httptest.NewServer(h)
+		t.Cleanup(srv.Close)
+		return srv.Listener.Addr().String()
+	}
+
+	self := listen(NewSite("dash", nil))
+	if got, _ := Probe(ctx, self, "dash"); got != ProbeSelf {
+		t.Errorf("same app: %v", got)
+	}
+	if got, name := Probe(ctx, self, "docs"); got != ProbeOtherApp || name != "dash" {
+		t.Errorf("other app: %v %q", got, name)
+	}
+	foreign := listen(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	if got, _ := Probe(ctx, foreign, "dash"); got != ProbeForeign {
+		t.Errorf("foreign: %v", got)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	free := ln.Addr().String()
+	ln.Close()
+	if got, _ := Probe(ctx, free, "dash"); got != ProbeFree {
+		t.Errorf("free port: %v", got)
 	}
 }

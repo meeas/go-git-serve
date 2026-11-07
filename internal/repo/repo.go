@@ -9,14 +9,24 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
+	"github.com/meeas/go-git-serve/internal/lock"
 	"github.com/meeas/go-git-serve/internal/logx"
 )
+
+// DefaultLockWait is how long Sync and Update wait for another copy of the
+// app that is updating the same checkout.
+const DefaultLockWait = 30 * time.Second
+
+// ErrInUse means a re-clone was needed but another running copy is serving
+// the checkout, so it cannot be replaced.
+var ErrInUse = errors.New("the cached checkout is being served by another running copy of this app; stop it first")
 
 // Syncer clones or updates URL into Dir.
 type Syncer struct {
@@ -25,6 +35,48 @@ type Syncer struct {
 	Dir      string // must be a directory owned by go-git-serve; it may be deleted and re-cloned
 	Auth     transport.AuthMethod
 	Progress io.Writer // optional git progress output
+
+	// LockWait bounds the wait for another copy's update (default
+	// DefaultLockWait).
+	LockWait time.Duration
+}
+
+// Two locks live next to the checkout:
+//
+//   - repo.lock (exclusive) is held for every clone, fetch and reset, so two
+//     copies never write to the checkout at the same time.
+//   - serve.lock is held shared by every copy that is serving the checkout;
+//     a re-clone needs it exclusively, so it never replaces files that a
+//     running copy is serving.
+func (s *Syncer) repoLockPath() string  { return s.Dir + ".lock" }
+func (s *Syncer) serveLockPath() string { return filepath.Join(filepath.Dir(s.Dir), "serve.lock") }
+
+func (s *Syncer) lockRepo(ctx context.Context) (*lock.Lock, error) {
+	wait := s.LockWait
+	if wait == 0 {
+		wait = DefaultLockWait
+	}
+	l, err := lock.Acquire(ctx, s.repoLockPath(), lock.Exclusive, wait)
+	var busy *lock.BusyError
+	if errors.As(err, &busy) {
+		who := "another copy of this app"
+		if busy.PID > 0 {
+			who = fmt.Sprintf("another copy of this app (process %d)", busy.PID)
+		}
+		return nil, fmt.Errorf("%s has been updating the checkout for over %s; try again later", who, wait)
+	}
+	return l, err
+}
+
+// HoldServing marks the checkout as being served until the returned lock is
+// released, waiting up to wait for a re-clone by another copy to finish.
+func (s *Syncer) HoldServing(ctx context.Context, wait time.Duration) (*lock.Lock, error) {
+	l, err := lock.Acquire(ctx, s.serveLockPath(), lock.Shared, wait)
+	var busy *lock.BusyError
+	if errors.As(err, &busy) {
+		return nil, fmt.Errorf("another copy of this app is still re-cloning the checkout")
+	}
+	return l, err
 }
 
 // Result describes what Sync did.
@@ -45,6 +97,20 @@ func (s *Syncer) Exists() bool {
 	return true
 }
 
+// Origin returns the remote URL of the existing checkout, or "".
+func (s *Syncer) Origin() string {
+	r, err := git.PlainOpen(s.Dir)
+	if err != nil {
+		return ""
+	}
+	defer closeRepo(r)
+	remote, err := r.Remote("origin")
+	if err != nil || len(remote.Config().URLs) == 0 {
+		return ""
+	}
+	return remote.Config().URLs[0]
+}
+
 // closeRepo releases go-git's open pack files. Windows cannot rename or
 // delete a directory while files in it are open, and periodic updates would
 // otherwise leak file handles.
@@ -58,6 +124,12 @@ func closeRepo(r *git.Repository) {
 // to the remote branch. If the configured URL or branch differs from the
 // existing checkout, the checkout is replaced.
 func (s *Syncer) Sync(ctx context.Context) (Result, error) {
+	l, err := s.lockRepo(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	defer l.Release()
+
 	r, err := git.PlainOpen(s.Dir)
 	if err == nil {
 		reason := s.mismatch(r)
@@ -78,6 +150,12 @@ func (s *Syncer) Sync(ctx context.Context) (Result, error) {
 // Update fetches and fast-forwards an existing checkout in place. Unlike
 // Sync it never deletes or re-clones, so it is safe while files are served.
 func (s *Syncer) Update(ctx context.Context) (Result, error) {
+	l, err := s.lockRepo(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	defer l.Release()
+
 	r, err := git.PlainOpen(s.Dir)
 	if err != nil {
 		return Result{}, fmt.Errorf("opening checkout: %w", err)
@@ -108,8 +186,19 @@ func (s *Syncer) mismatch(r *git.Repository) string {
 }
 
 // clone clones into a temporary sibling directory and swaps it into place,
-// so a failed clone never destroys a working cached copy.
+// so a failed clone never destroys a working cached copy. It refuses to run
+// while another copy is serving the checkout.
 func (s *Syncer) clone(ctx context.Context) (Result, error) {
+	serving, err := lock.Acquire(ctx, s.serveLockPath(), lock.Exclusive, 0)
+	var busy *lock.BusyError
+	if errors.As(err, &busy) {
+		return Result{}, ErrInUse
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	defer serving.Release()
+
 	parent := filepath.Dir(s.Dir)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return Result{}, err

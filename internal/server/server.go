@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 )
 
 // OpenRoot opens dir as a filesystem confined to that directory: symlinks
@@ -23,34 +24,77 @@ func OpenRoot(dir string) (*os.Root, error) {
 	return os.OpenRoot(dir)
 }
 
-// Handler serves files from fsys. It never serves anything inside a .git
-// directory, and when allowedHosts is non-empty it rejects requests whose
-// Host header names another host (DNS-rebinding protection).
-func Handler(fsys fs.FS, allowedHosts []string) http.Handler {
-	files := http.FileServerFS(fsys)
-	allowed := map[string]bool{}
+// AppHeader identifies a go-git-serve response and names the app, so a
+// second copy can recognise a running instance of itself.
+const AppHeader = "X-Go-Git-Serve"
+
+// Site is the HTTP handler. Until SetFiles is called it answers with a
+// short "starting" page, so the address is claimed (and recognisable)
+// while the repository is still being cloned or pulled.
+//
+// It never serves anything inside a .git directory, and when allowedHosts
+// is non-empty it rejects requests whose Host header names another host
+// (DNS-rebinding protection).
+type Site struct {
+	app     string
+	allowed map[string]bool
+	files   atomic.Pointer[http.Handler]
+}
+
+// NewSite returns a Site for app that accepts the given Host names.
+func NewSite(app string, allowedHosts []string) *Site {
+	s := &Site{app: app, allowed: map[string]bool{}}
 	for _, h := range allowedHosts {
-		allowed[strings.ToLower(h)] = true
+		s.allowed[strings.ToLower(h)] = true
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(allowed) > 0 && !allowed[hostOnly(r.Host)] {
-			http.Error(w, "unknown host", http.StatusMisdirectedRequest)
-			return
+	return s
+}
+
+// SetFiles starts serving fsys.
+func (s *Site) SetFiles(fsys fs.FS) {
+	h := http.FileServerFS(fsys)
+	s.files.Store(&h)
+}
+
+// Handler is a Site already serving fsys (convenience for tests).
+func Handler(app string, fsys fs.FS, allowedHosts []string) http.Handler {
+	s := NewSite(app, allowedHosts)
+	s.SetFiles(fsys)
+	return s
+}
+
+const startingPage = `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="2">
+<title>Starting...</title><body style="font-family:sans-serif;margin:3em">Fetching the latest version, one moment...</body>`
+
+func (s *Site) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set(AppHeader, s.app)
+	if len(s.allowed) > 0 && !s.allowed[hostOnly(r.Host)] {
+		http.Error(w, "unknown host", http.StatusMisdirectedRequest)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		h.Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	h.Set("Cache-Control", "no-cache")
+	h.Set("X-Content-Type-Options", "nosniff")
+	files := s.files.Load()
+	if files == nil {
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		h.Set("Retry-After", "2")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, startingPage)
 		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			w.Header().Set("Allow", "GET, HEAD")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if hasGitComponent(r.URL.Path) {
-			http.NotFound(w, r)
-			return
-		}
-		h := w.Header()
-		h.Set("Cache-Control", "no-cache")
-		h.Set("X-Content-Type-Options", "nosniff")
-		files.ServeHTTP(w, r)
-	})
+		return
+	}
+	if hasGitComponent(r.URL.Path) {
+		http.NotFound(w, r)
+		return
+	}
+	(*files).ServeHTTP(w, r)
 }
 
 func hostOnly(hostport string) string {
@@ -101,6 +145,15 @@ func IsWildcard(listen string) bool {
 func isLoopback(host string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// URLFor returns the browser URL for a configured listen address.
+func URLFor(listen string) string {
+	host, port, _ := net.SplitHostPort(listen)
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/"
 }
 
 // URL returns the browser URL for a bound listener address.
