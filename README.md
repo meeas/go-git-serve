@@ -36,6 +36,8 @@ cache, keychain entry and service.
 ```
 go-git-serve [run]                 sync, serve and open the site (default)
 go-git-serve init                  create the config file interactively
+go-git-serve load FILE.toml        install a configuration (or drag the file onto the program)
+go-git-serve bundle CONFIG -o OUT  build a single-file executable with CONFIG built in
 go-git-serve sync                  clone or pull, then exit
 go-git-serve auth set-token        store an access token in the OS keychain
 go-git-serve auth clear            remove the stored token
@@ -160,6 +162,72 @@ token. On Linux, run `loginctl enable-linger $USER` to keep the service running
 while logged out. Windows services run as LocalSystem, which cannot read your
 keychain: use `token_file` and absolute paths. Logs go to
 `<cache dir>/<name>/service.log`.
+
+## Deploying to a class
+
+Two ways to hand students a working app with a single file. Either way, put
+the credential **inline** in the configuration so there is no second file:
+
+```toml
+[repo]
+url = 'https://github.com/org/course-2026-spring.git'
+[auth]
+token = 'github_pat_...'        # or: key = '''<contents of a deploy key file>'''
+```
+
+Use a fine-grained token limited to that one repository, *Contents:
+read-only*, expiring when the course ends (or a read-only deploy key, which
+you must delete afterwards). Anyone who has the file has the credential.
+
+### 1. Load a configuration into an installed copy
+
+For an executable that is already installed (e.g. on a class VM) and reused
+across course editions:
+
+```sh
+course load ~/Downloads/course-2026-spring.toml
+```
+
+or drag the `.toml` file onto the program (Windows). `load` validates the
+file, tests access to the repository (a failed test is reported but does not
+block), asks before replacing an existing configuration (`--yes` to skip),
+installs it in the app's configuration folder, **deletes the downloaded file**
+(`--keep` to keep it), restarts the app's service if one is running
+(Windows: prints the command to run as Administrator), and then starts the
+app.
+
+### 2. Bundle the configuration into the executable
+
+One file per class and platform, nothing to set up:
+
+```sh
+go-git-serve bundle course.toml -o course.exe --base go-git-serve_windows_amd64.exe
+go-git-serve bundle course.toml -o course     --base go-git-serve_darwin_arm64
+go-git-serve bundle course.toml -o course     # this platform, from this executable
+go-git-serve bundle --show course.exe          # inspect (secrets masked)
+```
+
+`--base` is a release (or CI artifact) binary for the target platform; any
+platform can bundle for any other. The app name is stored in the bundle
+(`--name`, default: the output file name), so a download renamed to
+`course (1).exe` is still the same app.
+
+A bundled executable:
+- always uses its built-in configuration, which **takes priority**:
+  `--config`, `load` and `init` are refused, `GGS_*` variables are ignored,
+  and only flags that affect this machine are accepted (`--browser`,
+  `--no-browser`, `--browser-path`, `--listen`, `--offline`, `--daemon`,
+  `--log-file`, `-v`, `-q`);
+- keeps the configuration in space reserved inside every build, so the file
+  size and structure do not change; on Apple Silicon the ad-hoc code
+  signature is recomputed;
+- stores the configuration **obfuscated, not encrypted**: it does not show in
+  a text editor or `strings`, but a determined person can extract it.
+
+To change the configuration or rotate the credential, bundle again and
+redistribute. Each bundle is a new unsigned file, so Windows SmartScreen and
+macOS Gatekeeper ask once per new file; an antivirus heuristic flag cannot be
+ruled out entirely.
 
 ## Running more than one copy
 

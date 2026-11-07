@@ -63,6 +63,9 @@ func cmdRun(app string, args []string) error {
 	if err := config.Validate(&cfg); err != nil {
 		return usageErr("%v", err)
 	}
+	if found && currentBundle() == nil && cfg.HasInlineSecret() {
+		auth.WarnIfExposed(paths.ConfigFile)
+	}
 
 	if f.daemon {
 		return svc.Run(svc.Config{AppName: app}, func(ctx context.Context) error {
@@ -78,6 +81,21 @@ func cmdRun(app string, args []string) error {
 	return serve(ctx, runOpts{app: app, cfg: cfg, paths: paths, offline: f.offline, prompt: prompt})
 }
 
+// authOptions are the auth settings for this run. A bundled executable
+// ignores GGS_AUTH_TOKEN: its credentials are fixed by the bundle.
+func authOptions(app string, prompt auth.PromptFunc) auth.Options {
+	opts := auth.Options{AppName: app, Prompt: prompt}
+	if currentBundle() != nil {
+		opts.Getenv = func(k string) string {
+			if k == config.EnvToken {
+				return ""
+			}
+			return os.Getenv(k)
+		}
+	}
+	return opts
+}
+
 // gitProgress is where clone/fetch progress goes: the terminal when
 // interactive and not quiet, otherwise nowhere.
 func gitProgress(prompt auth.PromptFunc) io.Writer {
@@ -89,7 +107,7 @@ func gitProgress(prompt auth.PromptFunc) io.Writer {
 
 func newSyncer(app string, cfg config.Config, paths config.Paths, prompt auth.PromptFunc) (*repo.Syncer, error) {
 	var am transport.AuthMethod
-	am, err := auth.Method(cfg, auth.Options{AppName: app, Prompt: prompt})
+	am, err := auth.Method(cfg, authOptions(app, prompt))
 	if err != nil {
 		return nil, err
 	}

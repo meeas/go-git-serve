@@ -56,7 +56,7 @@ func Method(cfg config.Config, opts Options) (transport.AuthMethod, error) {
 		return nil, nil
 
 	case config.AuthToken:
-		tok, src, err := findToken(cfg.Auth.TokenFile, opts)
+		tok, src, err := findToken(cfg.Auth.TokenFile, cfg.Auth.Token, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -64,7 +64,13 @@ func Method(cfg config.Config, opts Options) (transport.AuthMethod, error) {
 		return &githttp.BasicAuth{Username: tokenUser, Password: tok}, nil
 
 	case config.AuthSSHKey:
-		signer, err := loadKey(cfg.Auth.KeyFile, opts)
+		var signer ssh.Signer
+		var err error
+		if cfg.Auth.Key != "" {
+			signer, err = parseKey([]byte(cfg.Auth.Key), "inline key (auth.key)", opts)
+		} else {
+			signer, err = loadKey(cfg.Auth.KeyFile, opts)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -96,11 +102,15 @@ func Method(cfg config.Config, opts Options) (transport.AuthMethod, error) {
 	return nil, fmt.Errorf("unknown auth method %q", cfg.Auth.Method)
 }
 
-// findToken looks for a token in GGS_AUTH_TOKEN, then the token file, then
+// findToken looks for a token in GGS_AUTH_TOKEN, then the config itself
+// (auth.token), then the token file, then
 // the OS keychain.
-func findToken(tokenFile string, opts Options) (tok, source string, err error) {
+func findToken(tokenFile, inline string, opts Options) (tok, source string, err error) {
 	if v := strings.TrimSpace(opts.Getenv(config.EnvToken)); v != "" {
 		return v, config.EnvToken, nil
+	}
+	if v := strings.TrimSpace(inline); v != "" {
+		return v, "the configuration (auth.token)", nil
 	}
 	if tokenFile != "" {
 		WarnIfExposed(tokenFile)
@@ -133,6 +143,12 @@ func loadKey(path string, opts Options) (ssh.Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading SSH key: %w", err)
 	}
+	return parseKey(pem, path, opts)
+}
+
+// parseKey parses a private key; label names it in messages (a file path,
+// or the inline config setting).
+func parseKey(pem []byte, path string, opts Options) (ssh.Signer, error) {
 	signer, err := ssh.ParsePrivateKey(pem)
 	if err == nil {
 		return signer, nil

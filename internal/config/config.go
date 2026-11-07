@@ -75,6 +75,10 @@ type Auth struct {
 	Method    string `toml:"method"`
 	KeyFile   string `toml:"key_file"`
 	TokenFile string `toml:"token_file"`
+	// Inline secrets, so a single config file can be handed out (e.g. to a
+	// class). Use instead of key_file / token_file, not alongside them.
+	Key   string `toml:"key"`
+	Token string `toml:"token"`
 }
 
 // Server describes the local web server.
@@ -154,14 +158,23 @@ func LoadFile(path string, cfg *Config) (found bool, unknown []string, err error
 	if err != nil {
 		return false, nil, err
 	}
-	md, err := toml.Decode(string(data), cfg)
+	unknown, err = Parse(string(data), cfg)
 	if err != nil {
 		return true, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return true, unknown, nil
+}
+
+// Parse decodes TOML text on top of cfg, returning unknown keys.
+func Parse(text string, cfg *Config) (unknown []string, err error) {
+	md, err := toml.Decode(text, cfg)
+	if err != nil {
+		return nil, err
 	}
 	for _, k := range md.Undecoded() {
 		unknown = append(unknown, k.String())
 	}
-	return true, unknown, nil
+	return unknown, nil
 }
 
 // envVar maps an environment variable onto a config field.
@@ -264,12 +277,12 @@ func InferAuthMethod(c Config) string {
 	}
 	switch ep.Protocol {
 	case "ssh":
-		if c.Auth.KeyFile != "" {
+		if c.Auth.KeyFile != "" || c.Auth.Key != "" {
 			return AuthSSHKey
 		}
 		return AuthSSHAgent
 	case "https":
-		if c.Auth.TokenFile != "" {
+		if c.Auth.TokenFile != "" || c.Auth.Token != "" {
 			return AuthToken
 		}
 		if _, ok := os.LookupEnv(EnvToken); ok {
@@ -277,6 +290,20 @@ func InferAuthMethod(c Config) string {
 		}
 	}
 	return AuthNone
+}
+
+// HasInlineSecret reports whether the config itself holds a key or token.
+func (c Config) HasInlineSecret() bool { return c.Auth.Key != "" || c.Auth.Token != "" }
+
+// Redacted returns a copy with inline secrets masked, for display.
+func (c Config) Redacted() Config {
+	if c.Auth.Key != "" {
+		c.Auth.Key = "<redacted>"
+	}
+	if c.Auth.Token != "" {
+		c.Auth.Token = "<redacted>"
+	}
+	return c
 }
 
 // Validate normalises cfg (filling an inferred auth method, cleaning paths)
@@ -301,13 +328,19 @@ func Validate(c *Config) error {
 		if ep.Protocol != "ssh" {
 			return fmt.Errorf("auth.method %q needs an SSH repository URL (git@host:org/repo.git or ssh://...), got %s", c.Auth.Method, ep.Protocol)
 		}
-		if c.Auth.Method == AuthSSHKey && c.Auth.KeyFile == "" {
-			return errors.New("auth.method \"ssh-key\" needs auth.key_file")
+		if c.Auth.Method == AuthSSHKey && c.Auth.KeyFile == "" && c.Auth.Key == "" {
+			return errors.New("auth.method \"ssh-key\" needs auth.key_file or auth.key")
 		}
 	case AuthToken:
 		if ep.Protocol != "https" {
 			return fmt.Errorf("auth.method \"token\" needs an https:// repository URL, got %s", ep.Protocol)
 		}
+	}
+	if c.Auth.KeyFile != "" && c.Auth.Key != "" {
+		return errors.New("set only one of auth.key_file and auth.key")
+	}
+	if c.Auth.TokenFile != "" && c.Auth.Token != "" {
+		return errors.New("set only one of auth.token_file and auth.token")
 	}
 	c.Auth.KeyFile = ExpandHome(c.Auth.KeyFile)
 	c.Auth.TokenFile = ExpandHome(c.Auth.TokenFile)

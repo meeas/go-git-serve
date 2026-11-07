@@ -95,7 +95,7 @@ func cmdService(app string, args []string) error {
 			logx.Warnf("%s %s not passed to the service, which reads only %s; put these settings in that file",
 				strings.Join(ignored, ", "), plural(len(ignored), "is", "are"), paths.ConfigFile)
 		}
-		if ignored := ignoredEnv(os.LookupEnv); len(ignored) > 0 {
+		if ignored := ignoredEnv(os.LookupEnv); len(ignored) > 0 && currentBundle() == nil {
 			logx.Warnf("%s %s set here but not passed to the service, which reads only %s; put these settings in that file (secrets: use key_file or token_file)",
 				strings.Join(ignored, ", "), plural(len(ignored), "is", "are"), paths.ConfigFile)
 		}
@@ -121,6 +121,9 @@ func cmdService(app string, args []string) error {
 			return err
 		}
 		sc.Arguments = []string{"run", "--daemon", "--config", cfgPath, "--log-file", logFile}
+		if currentBundle() != nil {
+			sc.Arguments = []string{"run", "--daemon", "--log-file", logFile} // uses its bundle
+		}
 		warnServiceAuth(app, cfg)
 		if exe, err := os.Executable(); err == nil && strings.Contains(exe, "go-build") {
 			logx.Warnf("installing from a temporary `go run` binary; build the executable first")

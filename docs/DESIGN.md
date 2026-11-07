@@ -17,7 +17,10 @@ it in its own window. This document records the decisions behind it.
 | Shallow update failures | Depth-1 fetch + hard reset; on a non-network/credential failure, replace with a fresh shallow clone | go-git's shallow-fetch history (issues #305, #1443) is mixed; current version passed every scenario we tested, the fallback covers the rest cheaply |
 | `.git` growth | After 30 changing updates: shallow re-clone, or repack + prune when full | go-git never garbage-collects; its repack walks history, which shallow checkouts lack |
 | Auth | `none`, `ssh-key`, `ssh-agent`, `token` | Covers public repos, deploy keys, agents/password managers and HTTPS-only networks |
-| Secrets | Never in the config file. Token: env, then file, then OS keychain. Passphrase: prompted only if the key is encrypted, or `GGS_AUTH_PASSPHRASE` | Config files get copied and backed up |
+| Secrets | Prefer outside the config file (token: env, then file, then OS keychain). Inline `auth.token` / `auth.key` allowed so one file can be handed to a class; the file is then treated as the credential. Passphrase: prompted only if the key is encrypted, or `GGS_AUTH_PASSPHRASE` | Config files get copied and shared; but for classroom distribution a second secret file adds no protection, while credential scope (single repo, read-only, expiring) does |
+| Classroom deployment | `load <file>` (or drag-and-drop): validate, test access (non-blocking), confirm replace, atomic install, delete source, restart service, start | Reusable installed executable, one file per course edition, Downloads cleaned up |
+| Bundling | Config embedded in a 64 KiB slot reserved in every build, filled in place; obfuscated (XOR with a SHA-256 keystream), not encrypted; app name stored in the bundle; bundle has priority and locks settings except machine-local flags | One file per class; no appended data (an antivirus red flag); in-place filling keeps the macOS ad-hoc signature re-computable; renamed downloads stay the same app |
+| macOS bundles | Recompute the linker's ad-hoc CodeDirectory page hashes in place; refuse anything but a linker ad-hoc signature | Apple Silicon kills binaries with invalid signatures; verified byte-for-byte against Go's linker in tests and by `codesign --verify --strict` on a macOS CI runner |
 | SSH host keys | `known_hosts`, falling back to GitHub's built-in keys; unknown hosts refused | go-git otherwise needs a known_hosts file; trust-on-first-use is unsafe |
 | Commands | `run` (default), `init`, `sync`, `auth`, `service`, `version` | Small surface; flags via `spf13/pflag` (GNU style) |
 | Daemon | `--daemon` = unattended foreground run; `service` delegates backgrounding to systemd / launchd / Windows SCM via `kardianos/service` | Go cannot fork reliably (especially on Windows); service managers give restart, boot start and logging |
@@ -34,12 +37,14 @@ it in its own window. This document records the decisions behind it.
 ## Layout
 
 ```
-main.go, run.go, init.go, commands.go   CLI: commands, serve loop, setup wizard
+main.go, run.go, init.go, commands.go,
+load.go, bundlecmd.go                     CLI: commands, serve loop, setup wizard, load, bundle
 internal/config    settings, precedence, validation, template rendering
 internal/auth      auth methods, host key verification, keychain
 internal/repo      clone / fetch + hard reset of the cached checkout
 internal/server    HTTP handler (.git blocking, host check), URL helpers
 internal/browser   app window / default browser launching
+internal/bundle    bundle slot, obfuscation, macOS re-signing
 internal/lock      crash-safe inter-process file locks (flock / LockFileEx)
 internal/svc       OS service integration
 internal/logx      levelled logging (timestamps in daemon mode)

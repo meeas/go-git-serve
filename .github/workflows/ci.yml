@@ -27,6 +27,23 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
       - run: go test -race -count=1 ./...
+      - name: Bundle smoke test
+        shell: bash
+        run: |
+          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
+          go build -o "ggs$ext" .
+          printf "[repo]\nurl = 'https://github.com/org/course.git'\n[auth]\ntoken = 'github_pat_CI_PLAINTEXT_CHECK'\n" > class.toml
+          "./ggs$ext" bundle class.toml -o "course$ext"
+          "./course$ext" version | grep '^course '
+          "./course$ext" bundle --show | grep "token = '<redacted>'"
+          if grep -q CI_PLAINTEXT_CHECK "course$ext"; then echo "token readable in the bundled binary"; exit 1; fi
+      - name: Verify the bundled macOS code signature
+        if: runner.os == 'macOS'
+        run: |
+          uname -m
+          codesign --verify --strict --verbose=2 ggs
+          codesign --verify --strict --verbose=2 course
+          ./course version
 
   cross-build:
     name: build all targets

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -28,5 +30,28 @@ func TestIgnoredEnv(t *testing.T) {
 	}
 	if slices.Contains(got, "secret") {
 		t.Error("a secret value was listed")
+	}
+}
+
+func TestIsLoadArg(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "Course.TOML")
+	os.WriteFile(cfg, []byte("x"), 0o600)
+	cases := []struct {
+		args []string
+		want bool
+	}{
+		{[]string{cfg}, true},
+		{[]string{filepath.Join(dir, "missing.toml")}, false},
+		{[]string{dir}, false},
+		{[]string{"run"}, false},
+		{[]string{cfg, "--yes"}, true},
+		{[]string{"--yes", cfg}, false},
+		{nil, false},
+	}
+	for _, c := range cases {
+		if got := isLoadArg(c.args); got != c.want {
+			t.Errorf("isLoadArg(%v) = %v, want %v", c.args, got, c.want)
+		}
 	}
 }

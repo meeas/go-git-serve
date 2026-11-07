@@ -41,9 +41,18 @@ func main() {
 
 func realMain(argv []string) int {
 	app := config.AppName(argv[0])
+	if b := currentBundle(); b != nil {
+		app = b.Name // stable even if the file is renamed, e.g. "course (1).exe"
+	} else if bundleErr != nil {
+		logx.Errorf("%v", bundleErr)
+		return 1
+	}
 	args := argv[1:]
 	cmd := "run"
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+	switch {
+	case isLoadArg(args): // a .toml file dragged onto the executable
+		cmd = "load"
+	case len(args) > 0 && !strings.HasPrefix(args[0], "-"):
 		cmd, args = args[0], args[1:]
 	}
 
@@ -52,7 +61,15 @@ func realMain(argv []string) int {
 	case "run":
 		err = cmdRun(app, args)
 	case "init":
+		if currentBundle() != nil {
+			err = usageErr("%s has a built-in configuration (bundled); there is nothing to set up", app)
+			break
+		}
 		err = cmdInit(app, args)
+	case "load":
+		err = cmdLoad(app, args)
+	case "bundle":
+		err = cmdBundle(app, args)
 	case "sync":
 		err = cmdSync(app, args)
 	case "auth":
@@ -86,10 +103,13 @@ Keeps a local copy of a git repository up to date and serves it as a web site.
 Commands:
   run                 sync, serve and open the site (default)
   init                create the config file interactively
+  load FILE           install FILE as the configuration (or drag a .toml file onto the program)
   sync                clone or pull, then exit
   auth set-token      store an access token in the OS keychain (prompts, or reads stdin)
   auth clear          remove the stored token
   service ACTION      manage the background service: install | uninstall | start | stop | restart | status
+  bundle CONFIG -o OUT   build a single-file executable with CONFIG built in
+                      (--base another release binary, --name app name; --show to inspect)
   version             print the version
   help                show this help
 
@@ -221,6 +241,16 @@ func (f *flags) load(app string) (cfg config.Config, paths config.Paths, found b
 	if err != nil {
 		return cfg, paths, found, err
 	}
+	if currentBundle() != nil {
+		// Bundled settings are fixed: no env overrides, only local flags.
+		if locked := ignoredFlags(f, bundleUnlockedFlags...); len(locked) > 0 {
+			return cfg, paths, found, usageErr("%s %s fixed by %s's built-in configuration", strings.Join(locked, ", "), plural(len(locked), "is", "are"), app)
+		}
+		if env := ignoredEnv(os.LookupEnv); len(env) > 0 {
+			logx.Warnf("%s ignored: %s has a built-in configuration", strings.Join(env, ", "), app)
+		}
+		return cfg, paths, found, f.apply(&cfg)
+	}
 	if err := config.ApplyEnv(&cfg, os.LookupEnv); err != nil {
 		return cfg, paths, found, usageErr("%v", err)
 	}
@@ -241,6 +271,15 @@ func (f *flags) loadFile(app string) (cfg config.Config, paths config.Paths, fou
 		paths.ConfigFile = config.ExpandHome(f.config)
 	}
 	cfg = config.Default()
+	if b := currentBundle(); b != nil {
+		if f.fs.Changed("config") {
+			return cfg, paths, true, usageErr("%s has a built-in configuration (bundled); --config cannot be used", app)
+		}
+		if _, err := config.Parse(b.Config, &cfg); err != nil {
+			return cfg, paths, true, fmt.Errorf("built-in configuration: %w", err)
+		}
+		return cfg, paths, true, nil
+	}
 	found, unknown, err := config.LoadFile(paths.ConfigFile, &cfg)
 	if err != nil {
 		return cfg, paths, found, usageErr("%v", err)

@@ -198,7 +198,30 @@ With a copy running on the default `127.0.0.1:8888`:
   - [ ] **[macOS]** With the firewall on, the "accept incoming network connections" prompt appears only in this case (as the binary is unsigned, it may reappear after replacing the binary).
 - [ ] Nothing secret (token, passphrase, key) appears in output with `-v`.
 
-## 8. Exit codes and stopping
+## 8. Classroom deployment
+
+**Load**
+- [ ] A config with inline `auth.token` (and one with inline `auth.key`) works without any other file.
+- [ ] `course load ~/Downloads/x.toml`: access confirmed, installed, the downloaded file is gone, then the app starts.
+- [ ] Loading over an existing configuration asks first; answering N changes nothing. `--yes` skips the question; `--keep` keeps the file.
+- [ ] A broken file (e.g. both `token` and `token_file`) is refused with exit code 2 and the existing configuration is untouched.
+- [ ] With the network off, `load` warns that access could not be confirmed but still installs.
+- [ ] **[Windows]** Drag the `.toml` file onto `course.exe` in Explorer: a console opens, asks to replace (if needed), installs and starts.
+- [ ] With the service running: Linux/macOS restart it automatically ("Restarted the course service"); Windows prints the Administrator command.
+- [ ] **[Linux, macOS]** A config file with an inline secret and mode `644` gets a "chmod 600" warning at start.
+
+**Bundle** (build each from any one machine with `--base`; test each on its own platform)
+- [ ] `go-git-serve bundle course.toml -o course[.exe] --base <release binary>` for this platform: the bundled app starts with no configuration file present.
+- [ ] Rename the bundled file (e.g. `course (1).exe`): still the same app (same cache folder, `course version` shows `course`).
+- [ ] `course --interval 5m` is refused ("fixed by course's built-in configuration"); `--browser none` and `--listen` work.
+- [ ] `course load x.toml`, `course init`, `course --config x.toml` are refused.
+- [ ] `course bundle --show` shows the configuration with the token masked.
+- [ ] Open the bundled executable in a text editor and search for the token: not found.
+- [ ] `course service install`: the service uses the built-in configuration.
+- [ ] **[Windows]** Microsoft Defender (and any other installed antivirus) does not quarantine the bundled `.exe`, including after a full scan. SmartScreen asks once per new bundle.
+- [ ] **[macOS]** The bundled Apple Silicon binary runs (no "killed" / "damaged" message) after Gatekeeper approval; `codesign --verify --strict course` succeeds. The Intel bundle runs too.
+
+## 9. Exit codes and stopping
 
 - [ ] Ctrl+C stops cleanly ("Stopping"), exit code 0.
 - [ ] Config or usage error (e.g. `--browser kiosk`): exit code 2.

@@ -198,3 +198,35 @@ func TestMethod(t *testing.T) {
 		t.Errorf("ssh-key: user=%q callback=%v", pk.User, pk.HostKeyCallback != nil)
 	}
 }
+
+func TestInlineCredentials(t *testing.T) {
+	cfg := config.Default()
+	cfg.Repo.URL = "https://github.com/org/app.git"
+	cfg.Auth.Method, cfg.Auth.Token = config.AuthToken, "  inline-token\n"
+	am, err := Method(cfg, Options{Getenv: noEnv})
+	if err != nil || am.(*githttp.BasicAuth).Password != "inline-token" {
+		t.Fatalf("inline token: %v %v", am, err)
+	}
+	env := func(k string) string {
+		if k == config.EnvToken {
+			return "env-token"
+		}
+		return ""
+	}
+	if am, _ := Method(cfg, Options{Getenv: env}); am.(*githttp.BasicAuth).Password != "env-token" {
+		t.Error("GGS_AUTH_TOKEN should override the inline token")
+	}
+
+	keyFile := writeKey(t, "")
+	pem, _ := os.ReadFile(keyFile)
+	cfg = config.Default()
+	cfg.Repo.URL = "git@github.com:org/app.git"
+	cfg.Auth.Method, cfg.Auth.Key = config.AuthSSHKey, string(pem)
+	if _, err := Method(cfg, Options{Getenv: noEnv}); err != nil {
+		t.Fatalf("inline key: %v", err)
+	}
+	cfg.Auth.Key = "not a key"
+	if _, err := Method(cfg, Options{Getenv: noEnv}); err == nil || strings.Contains(err.Error(), "not a key") {
+		t.Fatalf("bad inline key should fail without echoing it: %v", err)
+	}
+}

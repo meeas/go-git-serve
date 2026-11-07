@@ -190,3 +190,69 @@ func TestAppName(t *testing.T) {
 		}
 	}
 }
+
+func TestInlineSecrets(t *testing.T) {
+	// Inferred methods.
+	c := Default()
+	c.Repo.URL, c.Auth.Token = "https://github.com/org/app.git", "tok"
+	if err := Validate(&c); err != nil || c.Auth.Method != AuthToken {
+		t.Fatalf("inline token: method=%q err=%v", c.Auth.Method, err)
+	}
+	c = Default()
+	c.Repo.URL, c.Auth.Key = "git@github.com:org/app.git", "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n"
+	if err := Validate(&c); err != nil || c.Auth.Method != AuthSSHKey {
+		t.Fatalf("inline key: method=%q err=%v", c.Auth.Method, err)
+	}
+	// Not both inline and file.
+	c.Auth.KeyFile = "~/.ssh/k"
+	if err := Validate(&c); err == nil || !strings.Contains(err.Error(), "only one") {
+		t.Errorf("key + key_file: %v", err)
+	}
+	c = valid()
+	c.Auth.Token, c.Auth.TokenFile = "t", "/f"
+	if err := Validate(&c); err == nil || !strings.Contains(err.Error(), "only one") {
+		t.Errorf("token + token_file: %v", err)
+	}
+
+	// Round trip through the rendered file, including a multi-line key.
+	c = valid()
+	c.Auth.Method = AuthSSHKey
+	c.Repo.URL = "git@github.com:org/app.git"
+	c.Auth.Key = "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\nBBBB\n-----END OPENSSH PRIVATE KEY-----\n"
+	got := Default()
+	if _, err := Parse(Render(c), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Auth.Key != c.Auth.Key {
+		t.Errorf("key round trip:\n%q\n%q", got.Auth.Key, c.Auth.Key)
+	}
+
+	// Redaction hides both.
+	c.Auth.Token = "secret-token"
+	r := Render(c.Redacted())
+	if strings.Contains(r, "AAAA") || strings.Contains(r, "secret-token") {
+		t.Errorf("redacted render leaks a secret:\n%s", r)
+	}
+	if !c.HasInlineSecret() || Default().HasInlineSecret() {
+		t.Error("HasInlineSecret wrong")
+	}
+}
+
+func TestWriteRaw(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "app.toml")
+	if err := WriteRaw(path, []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRaw(path, []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "b" {
+		t.Errorf("content = %q", b)
+	}
+	if fi, _ := os.Stat(path); os.PathSeparator == '/' && fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v", fi.Mode().Perm())
+	}
+	if m, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".config-*")); len(m) > 0 {
+		t.Errorf("temp files left: %v", m)
+	}
+}
