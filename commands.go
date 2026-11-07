@@ -7,7 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+
+	"github.com/spf13/pflag"
 
 	"github.com/meeas/go-git-serve/internal/auth"
 	"github.com/meeas/go-git-serve/internal/config"
@@ -73,13 +76,28 @@ func cmdService(app string, args []string) error {
 	}
 	sc := svc.Config{AppName: app}
 
+	if action != "install" {
+		if ignored := ignoredFlags(f, "verbose", "quiet"); len(ignored) > 0 {
+			logx.Warnf("%s %s ignored by `service %s`", strings.Join(ignored, ", "), plural(len(ignored), "is", "are"), action)
+		}
+	}
+
 	if action == "install" {
-		cfg, paths, found, err := f.load(app)
+		// Validate what the service will actually see: the config file only.
+		cfg, paths, found, err := f.loadFile(app)
 		if err != nil {
 			return err
 		}
 		if !found {
 			return usageErr("no configuration at %s; run `%s init` first (services read their settings from the config file)", paths.ConfigFile, app)
+		}
+		if ignored := ignoredFlags(f, "config", "log-file", "verbose", "quiet"); len(ignored) > 0 {
+			logx.Warnf("%s %s not passed to the service, which reads only %s; put these settings in that file",
+				strings.Join(ignored, ", "), plural(len(ignored), "is", "are"), paths.ConfigFile)
+		}
+		if ignored := ignoredEnv(os.LookupEnv); len(ignored) > 0 {
+			logx.Warnf("%s %s set here but not passed to the service, which reads only %s; put these settings in that file (secrets: use key_file or token_file)",
+				strings.Join(ignored, ", "), plural(len(ignored), "is", "are"), paths.ConfigFile)
 		}
 		if runtime.GOOS == "windows" {
 			for _, p := range []string{cfg.Auth.KeyFile, cfg.Auth.TokenFile} {
@@ -107,7 +125,7 @@ func cmdService(app string, args []string) error {
 		if exe, err := os.Executable(); err == nil && strings.Contains(exe, "go-build") {
 			logx.Warnf("installing from a temporary `go run` binary; build the executable first")
 		}
-		defer logx.Infof("Logs: %s", logFile)
+		sc.LogFile = logFile
 	}
 
 	msg, err := svc.Control(sc, action)
@@ -116,12 +134,44 @@ func cmdService(app string, args []string) error {
 	}
 	logx.Infof("%s service: %s", app, msg)
 	if action == "install" {
+		logx.Infof("Logs: %s", sc.LogFile)
 		logx.Infof("Start it with: %s service start", app)
 		if runtime.GOOS == "linux" {
 			logx.Infof("To keep it running when you are logged out: loginctl enable-linger $USER")
 		}
 	}
 	return nil
+}
+
+// ignoredFlags lists the flags given on the command line, other than keep,
+// in the order they appear in help.
+func ignoredFlags(f *flags, keep ...string) []string {
+	var out []string
+	f.fs.Visit(func(fl *pflag.Flag) {
+		if !slices.Contains(keep, fl.Name) {
+			out = append(out, "--"+fl.Name)
+		}
+	})
+	return out
+}
+
+// ignoredEnv lists the GGS_* variables currently set, which an installed
+// service does not inherit.
+func ignoredEnv(lookup func(string) (string, bool)) []string {
+	var out []string
+	for _, name := range append(config.EnvNames(), config.EnvToken, config.EnvPassphrase) {
+		if _, ok := lookup(name); ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // warnServiceAuth points out auth settings that cannot work unattended.

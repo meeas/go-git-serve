@@ -217,6 +217,22 @@ func (f *flags) setupLogging() (closeFn func(), err error) {
 // load resolves defaults, the config file, env vars and flags. found
 // reports whether the config file exists.
 func (f *flags) load(app string) (cfg config.Config, paths config.Paths, found bool, err error) {
+	cfg, paths, found, err = f.loadFile(app)
+	if err != nil {
+		return cfg, paths, found, err
+	}
+	if err := config.ApplyEnv(&cfg, os.LookupEnv); err != nil {
+		return cfg, paths, found, usageErr("%v", err)
+	}
+	if err := f.apply(&cfg); err != nil {
+		return cfg, paths, found, err
+	}
+	return cfg, paths, found, nil
+}
+
+// loadFile resolves defaults and the config file only, which is all an
+// installed service sees.
+func (f *flags) loadFile(app string) (cfg config.Config, paths config.Paths, found bool, err error) {
 	paths, err = config.DefaultPaths(app)
 	if err != nil {
 		return cfg, paths, false, err
@@ -231,12 +247,6 @@ func (f *flags) load(app string) (cfg config.Config, paths config.Paths, found b
 	}
 	for _, k := range unknown {
 		logx.Warnf("%s: unknown setting %q ignored", paths.ConfigFile, k)
-	}
-	if err := config.ApplyEnv(&cfg, os.LookupEnv); err != nil {
-		return cfg, paths, found, usageErr("%v", err)
-	}
-	if err := f.apply(&cfg); err != nil {
-		return cfg, paths, found, err
 	}
 	return cfg, paths, found, nil
 }

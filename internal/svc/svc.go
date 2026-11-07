@@ -65,6 +65,7 @@ func (p *program) Stop(service.Service) error {
 type Config struct {
 	AppName   string
 	Arguments []string // arguments passed to the executable when the service starts
+	LogFile   string   // where the service logs (informational)
 }
 
 func newService(c Config, run RunFunc) (service.Service, *program, error) {

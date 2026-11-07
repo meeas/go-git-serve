@@ -155,6 +155,8 @@ Use a throwaway `SSH_KNOWN_HOSTS` file so your real one is untouched.
 
 **[Linux]** (systemd user service)
 - [ ] `ggs service install` (no sudo) → `ggs service start` → `ggs service status` shows *running*.
+- [ ] `ggs service install --interval 5m` (or with `GGS_UPDATE_INTERVAL` set) warns that it is not passed to the service; the service runs with the config file's value.
+- [ ] With `interval` and `randomize_start = true` in the config, the service log shows its first periodic update at a random point within the first interval.
 - [ ] `systemctl --user status ggs` shows it; the site is reachable; log at `~/.cache/ggs/service.log` has timestamps.
 - [ ] Start `ggs` interactively while the service runs: opens the service's site and exits.
 - [ ] `kill -9` the service process: systemd restarts it.

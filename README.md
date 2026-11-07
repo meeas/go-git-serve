@@ -153,7 +153,9 @@ go-git-serve service install   # systemd --user (Linux), LaunchAgent (macOS), Wi
 go-git-serve service start
 ```
 
-Notes: services cannot prompt, so use a deploy key without a passphrase or a
+Notes: a service reads **only the config file**. Flags and `GGS_*`
+environment variables given to `service install` are not passed to it
+(install warns if you use them), so put every setting in the file. Services cannot prompt, so use a deploy key without a passphrase or a
 token. On Linux, run `loginctl enable-linger $USER` to keep the service running
 while logged out. Windows services run as LocalSystem, which cannot read your
 keychain: use `token_file` and absolute paths. Logs go to
