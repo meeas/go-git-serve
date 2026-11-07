@@ -174,4 +174,9 @@ allow them in *System Settings > Privacy & Security* or run
 `xattr -d com.apple.quarantine <file>`; on Windows, choose *More info > Run
 anyway* in SmartScreen.
 
-See [docs/DESIGN.md](docs/DESIGN.md) for the design decisions.
+Every CI run also uploads the six binaries as an artifact named
+`go-git-serve-<commit>` (Actions → run → *Artifacts*, kept 30 days), for
+testing before a release.
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the design decisions and
+[docs/MANUAL-TESTING.md](docs/MANUAL-TESTING.md) for the manual test checklist.
