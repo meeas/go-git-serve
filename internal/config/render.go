@@ -55,6 +55,7 @@ func Render(c Config) string {
 	kv("on_start", strconv.FormatBool(c.Update.OnStart), "pull when starting")
 	iv, _ := c.Update.Interval.MarshalText()
 	kv("interval", q(string(iv)), "re-pull periodically, e.g. \"15m\"; \"0\" disables")
+	kv("randomize_start", strconv.FormatBool(c.Update.RandomizeStart), "first re-pull at a random time within the first interval")
 	line("")
 	line("[browser]")
 	kv("mode", q(c.Browser.Mode), "app (chromeless window) | default | none")

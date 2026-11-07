@@ -110,6 +110,7 @@ type flags struct {
 	auth, keyFile, tokenFile                         string
 	interval, browser, browserPath                   string
 	offline, noBrowser, daemon, verbose, quiet, full bool
+	randomizeStart                                   bool
 }
 
 func newFlags(app string) *flags {
@@ -127,6 +128,7 @@ func newFlags(app string) *flags {
 	fs.StringVar(&f.tokenFile, "token-file", "", "file containing an access token (token)")
 	fs.BoolVar(&f.offline, "offline", false, "serve the cached copy without pulling")
 	fs.StringVar(&f.interval, "interval", "", "re-pull periodically, e.g. 15m (0 disables)")
+	fs.BoolVar(&f.randomizeStart, "randomize-start", true, "first re-pull at a random time within the first interval (--randomize-start=false to disable)")
 	fs.StringVar(&f.browser, "browser", "", "app | default | none (default app)")
 	fs.StringVar(&f.browserPath, "browser-path", "", "browser binary for app mode (default: auto-detect)")
 	fs.BoolVar(&f.noBrowser, "no-browser", false, "only print the URL (same as --browser none)")
@@ -176,6 +178,9 @@ func (f *flags) apply(cfg *config.Config) error {
 			return usageErr("--interval: %v", err)
 		}
 		cfg.Update.Interval.Duration = d
+	}
+	if f.fs.Changed("randomize-start") {
+		cfg.Update.RandomizeStart = f.randomizeStart
 	}
 	if f.full {
 		cfg.Repo.Shallow = false

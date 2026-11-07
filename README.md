@@ -45,7 +45,7 @@ go-git-serve version | help
 
 Main flags (run `go-git-serve help` for all): `-c/--config`, `-l/--listen`,
 `--repo`, `--branch`, `--subdir`, `--full`, `--auth`, `--key-file`, `--token-file`,
-`--offline`, `--interval 15m`, `--browser app|default|none`, `--no-browser`,
+`--offline`, `--interval 15m`, `--randomize-start=false`, `--browser app|default|none`, `--no-browser`,
 `-d/--daemon`, `--log-file`, `-v/--verbose`, `-q/--quiet`.
 
 Exit codes: `0` ok, `1` runtime error (e.g. port in use, clone failed),
@@ -74,6 +74,7 @@ listen = '127.0.0.1:8888'
 [update]
 on_start = true                        # pull when starting
 interval = '0'                         # e.g. '15m' to re-pull while running
+randomize_start = true                 # first re-pull at a random time within the first interval
 
 [browser]
 mode = 'app'                           # app | default | none
@@ -86,8 +87,18 @@ Environment variables: `GGS_REPO_URL`, `GGS_REPO_BRANCH`, `GGS_REPO_SUBDIR`,
 `GGS_REPO_SHALLOW`,
 `GGS_AUTH_METHOD`, `GGS_AUTH_KEY_FILE`, `GGS_AUTH_TOKEN_FILE`,
 `GGS_SERVER_LISTEN`, `GGS_UPDATE_ON_START`, `GGS_UPDATE_INTERVAL`,
+`GGS_UPDATE_RANDOMIZE_START`,
 `GGS_BROWSER_MODE`, `GGS_BROWSER_PATH`, plus the secrets `GGS_AUTH_TOKEN` and
 `GGS_AUTH_PASSPHRASE`.
+
+### Periodic updates and classrooms
+
+With `interval` set, the first periodic check happens at a random moment
+within the first interval, and every later check follows one interval after
+the previous one finished. When many people start the app at the same time
+(a classroom), their checks are therefore spread across the interval instead
+of all hitting the git server together. A check that finds nothing new costs
+only a small exchange of branch names. Disable with `randomize_start = false`.
 
 ### Shallow clones
 

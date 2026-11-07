@@ -21,6 +21,7 @@ it in its own window. This document records the decisions behind it.
 | SSH host keys | `known_hosts`, falling back to GitHub's built-in keys; unknown hosts refused | go-git otherwise needs a known_hosts file; trust-on-first-use is unsafe |
 | Commands | `run` (default), `init`, `sync`, `auth`, `service`, `version` | Small surface; flags via `spf13/pflag` (GNU style) |
 | Daemon | `--daemon` = unattended foreground run; `service` delegates backgrounding to systemd / launchd / Windows SCM via `kardianos/service` | Go cannot fork reliably (especially on Windows); service managers give restart, boot start and logging |
+| Periodic update timing | First update at a random point in `[0, interval)` (`randomize_start`, default on), then one interval after each update finishes | Copies started together (a classroom) spread their checks across the interval and keep their own phase; no overlapping updates |
 | Failed pull | Serve the cached copy with a warning | The app stays usable offline |
 | Port in use | Exit with an error (code 1), checked before touching the checkout | Predictable URL; avoids two copies racing |
 | Same app already running | Detected by requesting the address (responses carry `X-Go-Git-Serve: <app>`): open it and exit 0; `--daemon` exits 1 | The user wanted the site, not a second server |

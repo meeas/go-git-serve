@@ -86,6 +86,10 @@ type Server struct {
 type Update struct {
 	OnStart  bool     `toml:"on_start"`
 	Interval Duration `toml:"interval"`
+	// RandomizeStart makes the first periodic update happen at a random
+	// moment within the first interval, so many copies started together
+	// (a classroom) spread their checks out. Later updates keep the interval.
+	RandomizeStart bool `toml:"randomize_start"`
 }
 
 // Browser controls how the site is shown.
@@ -134,7 +138,7 @@ func Default() Config {
 	return Config{
 		Repo:    Repo{Shallow: true},
 		Server:  Server{Listen: "127.0.0.1:8888"},
-		Update:  Update{OnStart: true},
+		Update:  Update{OnStart: true, RandomizeStart: true},
 		Browser: Browser{Mode: BrowserApp},
 	}
 }
@@ -193,6 +197,14 @@ var envVars = []envVar{
 			return fmt.Errorf("GGS_UPDATE_ON_START: %q is not true or false", v)
 		}
 		c.Update.OnStart = b
+		return nil
+	}},
+	{"GGS_UPDATE_RANDOMIZE_START", func(c *Config, v string) error {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("GGS_UPDATE_RANDOMIZE_START: %q is not true or false", v)
+		}
+		c.Update.RandomizeStart = b
 		return nil
 	}},
 	{"GGS_UPDATE_INTERVAL", func(c *Config, v string) error {

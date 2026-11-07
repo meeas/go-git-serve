@@ -109,6 +109,8 @@ Use a throwaway `SSH_KNOWN_HOSTS` file so your real one is untouched.
 - [ ] Push a commit to the repo, run again: "Updated main to …" and the new content is served.
 - [ ] Run with nothing new: "Up to date".
 - [ ] `--interval 1m`: push while running; within about a minute the page shows the change after a reload.
+- [ ] `--interval 1m -v`: the log says "first periodic update in Ns" with N below 60, different on each run; later updates are one minute apart. With `--randomize-start=false` it says 1m0s.
+- [ ] (classroom, optional) Start the app on several machines at the same time with `--interval 5m -v`: their first-update times differ.
 - [ ] `--subdir dist` serves `dist/index.html`; a non-existent subdir gives a clear error.
 - [ ] `--branch pages`: re-clones ("branch changed … re-cloning") and serves the `pages` content; switching back works.
 - [ ] Disconnect the network, run: "update failed … serving the cached copy", site still works.

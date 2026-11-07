@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -213,7 +214,7 @@ func serve(ctx context.Context, o runOpts) error {
 		logx.Infof("Press Ctrl+C to stop.")
 	}
 	if syncer != nil && cfg.Update.Interval.Duration > 0 {
-		go updateLoop(ctx, syncer, hold, served.open, cfg.Update.Interval.Duration)
+		go updateLoop(ctx, syncer, hold, served.open, cfg.Update.Interval.Duration, cfg.Update.RandomizeStart)
 	}
 	sess := browser.Open(url, o.browserOptions())
 
@@ -301,8 +302,24 @@ func (s *servedRoot) close() {
 	}
 }
 
-func updateLoop(ctx context.Context, s *repo.Syncer, hold *repo.Serving, swap func() error, every time.Duration) {
-	t := time.NewTicker(every)
+// firstUpdateDelay is the wait before the first periodic update: a random
+// point in [0, every) when randomize is set, so copies started together
+// (a whole classroom) spread their checks across the interval; otherwise
+// one full interval. randN returns a uniform value in [0, n).
+func firstUpdateDelay(every time.Duration, randomize bool, randN func(time.Duration) time.Duration) time.Duration {
+	if !randomize || every <= 0 {
+		return every
+	}
+	return randN(every)
+}
+
+// updateLoop pulls periodically. The first update follows firstUpdateDelay;
+// each later one waits a full interval after the previous update finished,
+// so a slow pull never overlaps the next and each copy keeps its own phase.
+func updateLoop(ctx context.Context, s *repo.Syncer, hold *repo.Serving, swap func() error, every time.Duration, randomize bool) {
+	wait := firstUpdateDelay(every, randomize, rand.N[time.Duration])
+	logx.Debugf("first periodic update in %s, then every %s", wait.Round(time.Second), every)
+	t := time.NewTimer(wait)
 	defer t.Stop()
 	for {
 		select {
@@ -323,6 +340,7 @@ func updateLoop(ctx context.Context, s *repo.Syncer, hold *repo.Serving, swap fu
 		default:
 			logx.Debugf("periodic update: no changes")
 		}
+		t.Reset(every)
 	}
 }
 
