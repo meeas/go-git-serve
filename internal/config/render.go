@@ -41,6 +41,7 @@ func Render(c Config) string {
 	}
 	opt("branch", c.Repo.Branch, "main", "default: the repository's default branch")
 	opt("subdir", filepath.ToSlash(c.Repo.Subdir), "dist", "serve only this folder; default: repo root")
+	kv("shallow", strconv.FormatBool(c.Repo.Shallow), "latest commit only; false keeps full history")
 	line("")
 	line("[auth]")
 	opt("method", c.Auth.Method, AuthSSHAgent, "none | ssh-key | ssh-agent | token; default: guessed from url")

@@ -105,6 +105,7 @@ Use a throwaway `SSH_KNOWN_HOSTS` file so your real one is untouched.
 
 ## 3. Sync behaviour
 
+- [ ] First clone is shallow by default: the checkout's `.git/shallow` file exists.
 - [ ] Push a commit to the repo, run again: "Updated main to …" and the new content is served.
 - [ ] Run with nothing new: "Up to date".
 - [ ] `--interval 1m`: push while running; within about a minute the page shows the change after a reload.
@@ -113,6 +114,10 @@ Use a throwaway `SSH_KNOWN_HOSTS` file so your real one is untouched.
 - [ ] Disconnect the network, run: "update failed … serving the cached copy", site still works.
 - [ ] `--offline` serves the cache without network; with an empty cache, a clear error.
 - [ ] `ggs sync` clones or pulls and exits 0 without serving.
+- [ ] Force-push `main` back to an older commit (`git reset --hard HEAD~2 && git push -f`), then update: the older content is served, with no "Re-cloning" message.
+- [ ] Amend and force-push the latest commit, then update: served content matches, no "Re-cloning".
+- [ ] `ggs sync --full`: "Re-cloning: switching to a full clone"; `.git/shallow` is gone. Running without `--full` again does not re-clone.
+- [ ] (optional, slow) With `--interval 30s`, push 31+ changing commits over time: a "Re-cloned … (compacting the checkout)" message appears and the site keeps working without a restart.
 - [ ] Delete a file inside the cached checkout, then pull a new commit: the checkout is restored to match the remote.
 - [ ] **[macOS]** (only if you have a git server on your local network) macOS 15+ may ask to allow access to devices on the local network; allowing it lets the clone proceed.
 

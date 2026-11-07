@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -95,6 +96,7 @@ func newSyncer(app string, cfg config.Config, paths config.Paths, prompt auth.Pr
 		URL:      cfg.Repo.URL,
 		Branch:   cfg.Repo.Branch,
 		Dir:      paths.RepoDir,
+		Shallow:  cfg.Repo.Shallow,
 		Auth:     am,
 		Progress: gitProgress(prompt),
 	}, nil
@@ -192,15 +194,14 @@ func serve(ctx context.Context, o runOpts) error {
 	}
 	defer hold.Release()
 
-	root, err := server.OpenRoot(filepath.Join(paths.RepoDir, cfg.Repo.Subdir))
-	if err != nil {
+	served := &servedRoot{dir: filepath.Join(paths.RepoDir, cfg.Repo.Subdir), site: site}
+	if err := served.open(); err != nil {
 		if cfg.Repo.Subdir != "" {
 			return fmt.Errorf("folder %q not found in the repository: %w", filepath.ToSlash(cfg.Repo.Subdir), err)
 		}
 		return err
 	}
-	defer root.Close()
-	site.SetFiles(root.FS())
+	defer served.close()
 
 	if origin := cached.Origin(); origin != "" && origin != cfg.Repo.URL {
 		logx.Warnf("serving the cached copy of %s, not %s", origin, cfg.Repo.URL)
@@ -212,7 +213,7 @@ func serve(ctx context.Context, o runOpts) error {
 		logx.Infof("Press Ctrl+C to stop.")
 	}
 	if syncer != nil && cfg.Update.Interval.Duration > 0 {
-		go updateLoop(ctx, syncer, cfg.Update.Interval.Duration)
+		go updateLoop(ctx, syncer, hold, served.open, cfg.Update.Interval.Duration)
 	}
 	sess := browser.Open(url, o.browserOptions())
 
@@ -256,6 +257,8 @@ func logSync(res repo.Result) {
 		short = short[:12]
 	}
 	switch {
+	case res.Cloned && res.Note != "":
+		logx.Infof("Re-cloned %s at %s (%s)", res.Branch, short, res.Note)
 	case res.Cloned:
 		logx.Infof("Cloned %s at %s", res.Branch, short)
 	case res.Changed:
@@ -265,7 +268,40 @@ func logSync(res repo.Result) {
 	}
 }
 
-func updateLoop(ctx context.Context, s *repo.Syncer, every time.Duration) {
+// servedRoot is the checkout directory being served. open (re)opens it, so
+// the site switches to a replaced checkout without a restart.
+type servedRoot struct {
+	mu   sync.Mutex
+	dir  string
+	site *server.Site
+	root *os.Root
+}
+
+func (s *servedRoot) open() error {
+	r, err := server.OpenRoot(s.dir)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.site.SetFiles(r.FS())
+	if s.root != nil {
+		s.root.Close()
+	}
+	s.root = r
+	return nil
+}
+
+func (s *servedRoot) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.root != nil {
+		s.root.Close()
+		s.root = nil
+	}
+}
+
+func updateLoop(ctx context.Context, s *repo.Syncer, hold *repo.Serving, swap func() error, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
@@ -275,7 +311,7 @@ func updateLoop(ctx context.Context, s *repo.Syncer, every time.Duration) {
 		case <-t.C:
 		}
 		uctx, cancel := context.WithTimeout(ctx, syncTimeout)
-		res, err := s.Update(uctx)
+		res, err := s.Update(uctx, hold, swap)
 		cancel()
 		switch {
 		case ctx.Err() != nil:

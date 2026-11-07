@@ -44,7 +44,7 @@ go-git-serve version | help
 ```
 
 Main flags (run `go-git-serve help` for all): `-c/--config`, `-l/--listen`,
-`--repo`, `--branch`, `--subdir`, `--auth`, `--key-file`, `--token-file`,
+`--repo`, `--branch`, `--subdir`, `--full`, `--auth`, `--key-file`, `--token-file`,
 `--offline`, `--interval 15m`, `--browser app|default|none`, `--no-browser`,
 `-d/--daemon`, `--log-file`, `-v/--verbose`, `-q/--quiet`.
 
@@ -61,6 +61,7 @@ variables < command-line flags**.
 url    = 'git@github.com:org/app.git'  # https://, ssh://, scp-style, or a local path
 branch = 'main'                        # optional; default: the repository's default branch
 subdir = 'dist'                        # optional; serve only this folder
+shallow = true                         # latest commit only (default); false keeps full history
 
 [auth]
 method   = 'ssh-key'                   # none | ssh-key | ssh-agent | token (default: guessed from url)
@@ -82,10 +83,28 @@ mode = 'app'                           # app | default | none
 Use single quotes for Windows paths (`'C:\Users\me\key'`) or forward slashes.
 
 Environment variables: `GGS_REPO_URL`, `GGS_REPO_BRANCH`, `GGS_REPO_SUBDIR`,
+`GGS_REPO_SHALLOW`,
 `GGS_AUTH_METHOD`, `GGS_AUTH_KEY_FILE`, `GGS_AUTH_TOKEN_FILE`,
 `GGS_SERVER_LISTEN`, `GGS_UPDATE_ON_START`, `GGS_UPDATE_INTERVAL`,
 `GGS_BROWSER_MODE`, `GGS_BROWSER_PATH`, plus the secrets `GGS_AUTH_TOKEN` and
 `GGS_AUTH_PASSPHRASE`.
+
+### Shallow clones
+
+By default only the latest commit is downloaded (`git clone --depth 1`), which
+for repositories with a long history is several times smaller and faster.
+Updates fetch only the new latest commit. If an update of a shallow checkout
+fails for any reason other than the network or credentials, the checkout is
+replaced by a fresh shallow clone (the running site switches over without a
+restart). Set `shallow = false` or pass `--full` to keep the full history
+instead; switching to full re-clones once.
+
+Every update that brings changes adds a file to `.git`, and git's usual
+clean-up does not run here, so after 30 such updates the checkout is
+compacted: re-cloned when shallow, repacked when full.
+
+Git LFS is not supported: files stored in LFS are served as their small
+pointer files.
 
 ## Authentication
 

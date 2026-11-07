@@ -37,11 +37,14 @@ typo = 1
 		t.Errorf("interval = %v", cfg.Update.Interval)
 	}
 
-	env := map[string]string{"GGS_SERVER_LISTEN": "127.0.0.1:9100", "GGS_UPDATE_ON_START": "false"}
+	if !cfg.Repo.Shallow {
+		t.Error("shallow should default to true")
+	}
+	env := map[string]string{"GGS_SERVER_LISTEN": "127.0.0.1:9100", "GGS_UPDATE_ON_START": "false", "GGS_REPO_SHALLOW": "false"}
 	if err := ApplyEnv(&cfg, func(k string) (string, bool) { v, ok := env[k]; return v, ok }); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Server.Listen != "127.0.0.1:9100" || cfg.Update.OnStart {
+	if cfg.Server.Listen != "127.0.0.1:9100" || cfg.Update.OnStart || cfg.Repo.Shallow {
 		t.Errorf("env not applied: %+v", cfg)
 	}
 	if cfg.Repo.Branch != "main" {
@@ -58,7 +61,7 @@ func TestLoadMissingFile(t *testing.T) {
 }
 
 func TestApplyEnvBadValues(t *testing.T) {
-	for k, v := range map[string]string{"GGS_UPDATE_ON_START": "maybe", "GGS_UPDATE_INTERVAL": "soon"} {
+	for k, v := range map[string]string{"GGS_UPDATE_ON_START": "maybe", "GGS_UPDATE_INTERVAL": "soon", "GGS_REPO_SHALLOW": "sometimes"} {
 		cfg := Default()
 		err := ApplyEnv(&cfg, func(n string) (string, bool) { return v, n == k })
 		if err == nil {

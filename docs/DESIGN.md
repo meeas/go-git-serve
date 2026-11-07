@@ -13,6 +13,9 @@ it in its own window. This document records the decisions behind it.
 | Missing config | Interactive wizard on a terminal; otherwise write a commented template and exit 2 | Friendly for people, predictable for services |
 | Per-app identity | Every path, keychain entry and service name derives from the executable name | Copies of one binary act as independent apps |
 | Repo options | `url`, optional `branch`, optional `subdir` | Serve build output (`dist/`) or a `gh-pages` branch |
+| Clone depth | Shallow (depth 1) by default; `shallow = false` / `--full` for full history | Only the latest commit is ever served; history only costs disk and time |
+| Shallow update failures | Depth-1 fetch + hard reset; on a non-network/credential failure, replace with a fresh shallow clone | go-git's shallow-fetch history (issues #305, #1443) is mixed; current version passed every scenario we tested, the fallback covers the rest cheaply |
+| `.git` growth | After 30 changing updates: shallow re-clone, or repack + prune when full | go-git never garbage-collects; its repack walks history, which shallow checkouts lack |
 | Auth | `none`, `ssh-key`, `ssh-agent`, `token` | Covers public repos, deploy keys, agents/password managers and HTTPS-only networks |
 | Secrets | Never in the config file. Token: env, then file, then OS keychain. Passphrase: prompted only if the key is encrypted, or `GGS_AUTH_PASSPHRASE` | Config files get copied and backed up |
 | SSH host keys | `known_hosts`, falling back to GitHub's built-in keys; unknown hosts refused | go-git otherwise needs a known_hosts file; trust-on-first-use is unsafe |
@@ -48,11 +51,18 @@ internal/logx      levelled logging (timestamps in daemon mode)
   `serve.lock` shared → serve the files. Claiming the address before syncing
   means a second copy recognises the first even during a long clone.
 
-- **Sync.** First run clones (single branch) into a temporary folder and
-  moves it into place, so a failed clone never destroys a working cache. Later
-  runs fetch the checked-out branch and hard-reset to it. If `url` or `branch`
-  changes, the cache is re-cloned at the next start; periodic updates only
-  update in place.
+- **Sync.** Clones (single branch, depth 1 unless full) go into a temporary
+  folder; the old checkout is renamed aside, the new one moved into place,
+  and only then is the old one deleted, so a failed clone never destroys a
+  working cache. Later runs fetch the checked-out branch and hard-reset to
+  it. If `url` or `branch` changes, or full history is newly requested, the
+  cache is re-cloned at the next start.
+- **Replacing a checkout while serving** (failed shallow update, compaction).
+  Only when no other copy is serving it: the serving copy drops its shared
+  `serve.lock`, takes it exclusively, swaps the folders, re-opens the served
+  folder, then deletes the old one. On Windows the old folder may still have
+  open files; leftovers (`repo.old-*`, `.clone-*`) are removed on the next
+  update or start.
 - **App-window detection.** The browser runs with its own profile so the
   launched process lives exactly as long as the window. If it exits within
   3 seconds it is assumed to have handed off to an existing browser process,

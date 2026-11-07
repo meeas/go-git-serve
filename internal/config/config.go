@@ -66,6 +66,8 @@ type Repo struct {
 	URL    string `toml:"url"`
 	Branch string `toml:"branch"`
 	Subdir string `toml:"subdir"`
+	// Shallow clones and fetches only the latest commit (default true).
+	Shallow bool `toml:"shallow"`
 }
 
 // Auth describes how to authenticate to the git server.
@@ -130,6 +132,7 @@ func ParseDuration(s string) (time.Duration, error) {
 // Default returns the built-in defaults.
 func Default() Config {
 	return Config{
+		Repo:    Repo{Shallow: true},
 		Server:  Server{Listen: "127.0.0.1:8888"},
 		Update:  Update{OnStart: true},
 		Browser: Browser{Mode: BrowserApp},
@@ -172,6 +175,14 @@ var envVars = []envVar{
 	{"GGS_REPO_URL", setString(func(c *Config) *string { return &c.Repo.URL })},
 	{"GGS_REPO_BRANCH", setString(func(c *Config) *string { return &c.Repo.Branch })},
 	{"GGS_REPO_SUBDIR", setString(func(c *Config) *string { return &c.Repo.Subdir })},
+	{"GGS_REPO_SHALLOW", func(c *Config, v string) error {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("GGS_REPO_SHALLOW: %q is not true or false", v)
+		}
+		c.Repo.Shallow = b
+		return nil
+	}},
 	{"GGS_AUTH_METHOD", setString(func(c *Config) *string { return &c.Auth.Method })},
 	{"GGS_AUTH_KEY_FILE", setString(func(c *Config) *string { return &c.Auth.KeyFile })},
 	{"GGS_AUTH_TOKEN_FILE", setString(func(c *Config) *string { return &c.Auth.TokenFile })},

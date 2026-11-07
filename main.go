@@ -105,11 +105,11 @@ Secrets: GGS_AUTH_TOKEN, GGS_AUTH_PASSPHRASE.
 type flags struct {
 	fs *pflag.FlagSet
 
-	config, logFile                            string
-	listen, repo, branch, subdir               string
-	auth, keyFile, tokenFile                   string
-	interval, browser, browserPath             string
-	offline, noBrowser, daemon, verbose, quiet bool
+	config, logFile                                  string
+	listen, repo, branch, subdir                     string
+	auth, keyFile, tokenFile                         string
+	interval, browser, browserPath                   string
+	offline, noBrowser, daemon, verbose, quiet, full bool
 }
 
 func newFlags(app string) *flags {
@@ -121,6 +121,7 @@ func newFlags(app string) *flags {
 	fs.StringVar(&f.repo, "repo", "", "repository URL")
 	fs.StringVar(&f.branch, "branch", "", "branch to serve (default: the repository's default)")
 	fs.StringVar(&f.subdir, "subdir", "", "serve only this folder of the repository")
+	fs.BoolVar(&f.full, "full", false, "clone the full history instead of only the latest commit")
 	fs.StringVar(&f.auth, "auth", "", "auth method: none | ssh-key | ssh-agent | token")
 	fs.StringVar(&f.keyFile, "key-file", "", "SSH private key file (ssh-key)")
 	fs.StringVar(&f.tokenFile, "token-file", "", "file containing an access token (token)")
@@ -175,6 +176,9 @@ func (f *flags) apply(cfg *config.Config) error {
 			return usageErr("--interval: %v", err)
 		}
 		cfg.Update.Interval.Duration = d
+	}
+	if f.full {
+		cfg.Repo.Shallow = false
 	}
 	if f.noBrowser || f.daemon {
 		cfg.Browser.Mode = config.BrowserNone
