@@ -1,0 +1,9 @@
+# Compiled binary
+/go-git-serve
+*.exe
+
+# Private keys should never be committed
+id_*
+*.pem
+*.key
+deleteme
