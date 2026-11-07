@@ -1,0 +1,25 @@
+version: 2
+
+project_name: go-git-serve
+
+builds:
+  - binary: go-git-serve
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, windows, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  # Ship bare single-file executables, e.g. go-git-serve_windows_arm64.exe
+  - formats: [binary]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc

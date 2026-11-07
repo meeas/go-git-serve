@@ -1,129 +1,233 @@
+// Command go-git-serve keeps a local copy of a git repository up to date and
+// serves it as a web site, opened in a chromeless browser window.
+//
+// All settings are tied to the executable's name, so copies of the binary
+// under different names act as independent apps.
 package main
 
 import (
+	"errors"
 	"fmt"
-	"log"
-	"net/http"
 	"os"
-	"path/filepath"
+	"runtime"
+	"strings"
 
-	git "github.com/go-git/go-git/v5"
-	. "github.com/go-git/go-git/v5/_examples"
-	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
-	"github.com/ilyakaznacheev/cleanenv"
+	"github.com/spf13/pflag"
+
+	"github.com/meeas/go-git-serve/internal/config"
+	"github.com/meeas/go-git-serve/internal/logx"
 )
 
-type ConfigDatabase struct {
-	gitUrl      string `yaml:"gitUrl" env:"GGS-GITURL"`
-	sshPrivKey  []byte `yaml:"sshPrivateKey" env:"GGS-SSHPRIVATEKEY"`
-	webAddrPort string `yaml:"webAddrPort" env:"GGS-WEBSERVERPORT" env-default:"localhost:8888"`
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
+// exitError carries a specific process exit code.
+type exitError struct {
+	code int
+	err  error
 }
 
-func getConfigFile(exeFilename string) string {
-	userConfigDir, err := os.UserConfigDir()
-	if err != nil {
-		log.Fatal(err)
-	}
-	return userConfigDir + "/" + exeFilename + ".yaml"
-}
+func (e *exitError) Error() string { return e.err.Error() }
+func (e *exitError) Unwrap() error { return e.err }
 
-func getGitWebRoot(exeFilename string) string {
-	userCacheDir, err := os.UserCacheDir()
-	if err != nil {
-		log.Fatal(err)
-	}
-	return userCacheDir + "/" + exeFilename
-}
-
-func createConfigFile(userConfigFile string, cfg ConfigDatabase) {
-	fmt.Println("Configuration file not found.")
-	fmt.Printf("Git repository URL: ")
-	fmt.Scanln(&cfg.gitUrl)
-	fmt.Printf("SSH private key file: ")
-	fmt.Scanln(&cfg.sshPrivKey)
-}
-
-func gitSshClone(url, directory string, sshPrivKey []byte) {
-	var password string
-
-	// Clone the given repository to the given directory
-	Info("git clone %s ", url)
-	publicKeys, err := ssh.NewPublicKeys("git", sshPrivKey, password)
-	if err != nil {
-		Warning("generate publickeys failed: %s\n", err.Error())
-		return
-	}
-
-	_, err = git.PlainClone(directory, false, &git.CloneOptions{
-		// The intended use of a GitHub personal access token is in replace of your password
-		// because access tokens can easily be revoked.
-		// https://help.github.com/articles/creating-a-personal-access-token-for-the-command-line/
-		Auth:     publicKeys,
-		URL:      url,
-		Progress: os.Stdout,
-	})
-	if err != nil {
-		fmt.Println("Content successfully cloned.")
-	}
-}
-
-func gitSshPull(webRoot string, sshPrivKey []byte) {
-	var password string
-
-	// We instantiate a new repository targeting the given path (the .git folder)
-	r, err := git.PlainOpen(webRoot)
-	CheckIfError(err)
-
-	// Get the working directory for the repository
-	w, err := r.Worktree()
-	CheckIfError(err)
-
-	publicKeys, err := ssh.NewPublicKeys("git", sshPrivKey, password)
-	if err != nil {
-		Warning("generate publickeys failed: %s\n", err.Error())
-		return
-	}
-
-	// Pull the latest changes from the origin remote and merge into the current branch
-	err = w.Pull(&git.PullOptions{
-		RemoteName: "origin",
-		Auth:       publicKeys,
-	})
-	if err != nil {
-		fmt.Println("Content updated.")
-	}
-
+// usageErr is a configuration or usage problem (exit code 2).
+func usageErr(format string, args ...any) error {
+	return &exitError{code: 2, err: fmt.Errorf(format, args...)}
 }
 
 func main() {
+	os.Exit(realMain(os.Args))
+}
 
-	var cfg ConfigDatabase
-
-	exeFilename := filepath.Base(os.Args[0])
-	userConfigFile := getConfigFile(exeFilename)
-	userGitWebRoot := getGitWebRoot(exeFilename)
-
-	if _, err := os.Stat(userConfigFile); os.IsNotExist(err) {
-		fmt.Println(err)
-		os.Exit(2)
+func realMain(argv []string) int {
+	app := config.AppName(argv[0])
+	args := argv[1:]
+	cmd := "run"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		cmd, args = args[0], args[1:]
 	}
 
-	err := cleanenv.ReadConfig(userConfigFile, &cfg)
+	var err error
+	switch cmd {
+	case "run":
+		err = cmdRun(app, args)
+	case "init":
+		err = cmdInit(app, args)
+	case "sync":
+		err = cmdSync(app, args)
+	case "auth":
+		err = cmdAuth(app, args)
+	case "service":
+		err = cmdService(app, args)
+	case "version":
+		fmt.Printf("%s %s (go-git-serve, %s/%s)\n", app, version, runtime.GOOS, runtime.GOARCH)
+	case "help":
+		fmt.Print(usage(app))
+	default:
+		err = usageErr("unknown command %q (see `%s help`)", cmd, app)
+	}
+
+	if err == nil || errors.Is(err, pflag.ErrHelp) {
+		return 0
+	}
+	logx.Errorf("%v", err)
+	var ee *exitError
+	if errors.As(err, &ee) {
+		return ee.code
+	}
+	return 1
+}
+
+func usage(app string) string {
+	return strings.ReplaceAll(`Usage: APP [command] [flags]
+
+Keeps a local copy of a git repository up to date and serves it as a web site.
+
+Commands:
+  run                 sync, serve and open the site (default)
+  init                create the config file interactively
+  sync                clone or pull, then exit
+  auth set-token      store an access token in the OS keychain (prompts, or reads stdin)
+  auth clear          remove the stored token
+  service ACTION      manage the background service: install | uninstall | start | stop | restart | status
+  version             print the version
+  help                show this help
+
+Flags:
+`+newFlags(app).fs.FlagUsages()+`
+Configuration file: <user config dir>/APP.toml (see --config).
+Every setting can also be set with GGS_* environment variables, e.g. GGS_REPO_URL.
+Secrets: GGS_AUTH_TOKEN, GGS_AUTH_PASSPHRASE.
+`, "APP", app)
+}
+
+// flags holds every command-line flag. Not all commands use all of them.
+type flags struct {
+	fs *pflag.FlagSet
+
+	config, logFile                            string
+	listen, repo, branch, subdir               string
+	auth, keyFile, tokenFile                   string
+	interval, browser, browserPath             string
+	offline, noBrowser, daemon, verbose, quiet bool
+}
+
+func newFlags(app string) *flags {
+	f := &flags{fs: pflag.NewFlagSet(app, pflag.ContinueOnError)}
+	fs := f.fs
+	fs.SortFlags = false
+	fs.StringVarP(&f.config, "config", "c", "", "config file (default <user config dir>/"+app+".toml)")
+	fs.StringVarP(&f.listen, "listen", "l", "", "address to serve on (default 127.0.0.1:8888)")
+	fs.StringVar(&f.repo, "repo", "", "repository URL")
+	fs.StringVar(&f.branch, "branch", "", "branch to serve (default: the repository's default)")
+	fs.StringVar(&f.subdir, "subdir", "", "serve only this folder of the repository")
+	fs.StringVar(&f.auth, "auth", "", "auth method: none | ssh-key | ssh-agent | token")
+	fs.StringVar(&f.keyFile, "key-file", "", "SSH private key file (ssh-key)")
+	fs.StringVar(&f.tokenFile, "token-file", "", "file containing an access token (token)")
+	fs.BoolVar(&f.offline, "offline", false, "serve the cached copy without pulling")
+	fs.StringVar(&f.interval, "interval", "", "re-pull periodically, e.g. 15m (0 disables)")
+	fs.StringVar(&f.browser, "browser", "", "app | default | none (default app)")
+	fs.StringVar(&f.browserPath, "browser-path", "", "browser binary for app mode (default: auto-detect)")
+	fs.BoolVar(&f.noBrowser, "no-browser", false, "only print the URL (same as --browser none)")
+	fs.BoolVarP(&f.daemon, "daemon", "d", false, "run unattended: no prompts, no browser, timestamped logs")
+	fs.StringVar(&f.logFile, "log-file", "", "append logs to this file instead of stderr")
+	fs.BoolVarP(&f.verbose, "verbose", "v", false, "show debug output")
+	fs.BoolVarP(&f.quiet, "quiet", "q", false, "only show warnings and errors")
+	fs.Usage = func() { fmt.Fprint(os.Stderr, usage(app)) }
+	return f
+}
+
+func (f *flags) parse(args []string) error {
+	if err := f.fs.Parse(args); err != nil {
+		if errors.Is(err, pflag.ErrHelp) {
+			return err
+		}
+		return usageErr("%v", err)
+	}
+	if f.fs.NArg() > 0 {
+		return usageErr("unexpected argument %q", f.fs.Arg(0))
+	}
+	if f.verbose && f.quiet {
+		return usageErr("--verbose and --quiet cannot be combined")
+	}
+	return nil
+}
+
+// apply overrides cfg with the flags that were given.
+func (f *flags) apply(cfg *config.Config) error {
+	set := func(name string, dst *string, v string) {
+		if f.fs.Changed(name) {
+			*dst = v
+		}
+	}
+	set("listen", &cfg.Server.Listen, f.listen)
+	set("repo", &cfg.Repo.URL, f.repo)
+	set("branch", &cfg.Repo.Branch, f.branch)
+	set("subdir", &cfg.Repo.Subdir, f.subdir)
+	set("auth", &cfg.Auth.Method, f.auth)
+	set("key-file", &cfg.Auth.KeyFile, f.keyFile)
+	set("token-file", &cfg.Auth.TokenFile, f.tokenFile)
+	set("browser", &cfg.Browser.Mode, f.browser)
+	set("browser-path", &cfg.Browser.Path, f.browserPath)
+	if f.fs.Changed("interval") {
+		d, err := config.ParseDuration(f.interval)
+		if err != nil {
+			return usageErr("--interval: %v", err)
+		}
+		cfg.Update.Interval.Duration = d
+	}
+	if f.noBrowser || f.daemon {
+		cfg.Browser.Mode = config.BrowserNone
+	}
+	return nil
+}
+
+// setupLogging applies --verbose/--quiet/--log-file. Daemon logs get timestamps.
+func (f *flags) setupLogging() (closeFn func(), err error) {
+	level := logx.LevelNormal
+	switch {
+	case f.verbose:
+		level = logx.LevelVerbose
+	case f.quiet:
+		level = logx.LevelQuiet
+	}
+	closeFn = func() {}
+	out := os.Stderr
+	if f.logFile != "" {
+		lf, err := os.OpenFile(config.ExpandHome(f.logFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return nil, usageErr("opening log file: %v", err)
+		}
+		out = lf
+		closeFn = func() { lf.Close() }
+	}
+	logx.Setup(out, level, f.daemon || f.logFile != "")
+	return closeFn, nil
+}
+
+// load resolves defaults, the config file, env vars and flags. found
+// reports whether the config file exists.
+func (f *flags) load(app string) (cfg config.Config, paths config.Paths, found bool, err error) {
+	paths, err = config.DefaultPaths(app)
 	if err != nil {
-		fmt.Println(err)
+		return cfg, paths, false, err
 	}
-
-	fmt.Println(cfg.gitUrl)
-	fmt.Println(cfg.sshPrivKey)
-	fmt.Println(cfg.webAddrPort)
-
-	if _, err := os.Stat(userGitWebRoot); os.IsNotExist(err) {
-		gitSshClone(cfg.gitUrl, userGitWebRoot, cfg.sshPrivKey)
-	} else {
-		gitSshPull(userGitWebRoot, cfg.sshPrivKey)
+	if f.config != "" {
+		paths.ConfigFile = config.ExpandHome(f.config)
 	}
-
-	fmt.Println("Starting webserver on http://" + cfg.webAddrPort)
-	http.Handle("/", http.FileServer(http.Dir(userGitWebRoot)))
-	log.Fatal(http.ListenAndServe(cfg.webAddrPort, nil))
+	cfg = config.Default()
+	found, unknown, err := config.LoadFile(paths.ConfigFile, &cfg)
+	if err != nil {
+		return cfg, paths, found, usageErr("%v", err)
+	}
+	for _, k := range unknown {
+		logx.Warnf("%s: unknown setting %q ignored", paths.ConfigFile, k)
+	}
+	if err := config.ApplyEnv(&cfg, os.LookupEnv); err != nil {
+		return cfg, paths, found, usageErr("%v", err)
+	}
+	if err := f.apply(&cfg); err != nil {
+		return cfg, paths, found, err
+	}
+	return cfg, paths, found, nil
 }

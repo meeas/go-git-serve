@@ -7,3 +7,4 @@ id_*
 *.pem
 *.key
 deleteme
+/dist/
