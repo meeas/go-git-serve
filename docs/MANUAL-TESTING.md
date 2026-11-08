@@ -61,6 +61,12 @@ and output with `-v`.
 - [ ] With no config, run non-interactively (`ggs < /dev/null` **[Linux, macOS]**, `ggs < NUL` **[Windows]**): writes a commented template, exits code 2, does not overwrite an existing file on a second run.
 - [ ] Config is written to the location in the table above.
 - [ ] `ggs init` with an existing config asks before overwriting.
+- [ ] In the wizard, long answers (repository URL, file paths, token) are typed on their own line after `> `.
+- [ ] Arrow keys, Home/End and backspace edit the current answer (e.g. fix a typo in the branch name); Ctrl+C cancels with "cancelled".
+- [ ] Pasting a token shows one `*` per character; backspace removes them.
+- [ ] `ssh-key` → `paste`: a pasted private key (shown on screen) is accepted at its `-----END ... PRIVATE KEY-----` line; a broken paste is rejected and asked again; a passphrase-protected key gets the passphrase note.
+- [ ] Token stored in `config`, key stored in `config`: the config file then holds `token = '...'` / `key = '''...'''` and works on its own.
+- [ ] **[Windows]** All of the above in both Windows Terminal and the classic console (cmd.exe window): no stray escape characters when using arrow keys.
 - [ ] Config file contains no secrets after choosing `token`.
 - [ ] **[Linux, macOS]** Config and token files are created mode `600`.
 - [ ] Env var overrides a file setting (`GGS_SERVER_LISTEN=127.0.0.1:9999 ggs`), and a flag overrides the env var (`--listen 127.0.0.1:9998`).

@@ -17,7 +17,8 @@ go-git-serve            # first run in a terminal asks a few questions, then:
                         # clones the repo, serves it, opens an app window
 ```
 
-Closing the window stops the program. Each later run pulls the latest
+The wizard can store a token in the OS keychain, a file, or inline in the
+config, and accepts an SSH key either as a file path or pasted in. Closing the window stops the program. Each later run pulls the latest
 changes first; if the pull fails (offline, say), the cached copy is served.
 
 ### One binary, many apps
@@ -138,7 +139,8 @@ other users trigger a warning on Linux and macOS.
 ## Browser
 
 - `app` (default): opens a chromeless window using Chrome, Edge, Chromium or
-  Brave with a dedicated profile. Closing the window stops the program. Falls
+  Brave with a dedicated profile. The wizard can store a token in the OS keychain, a file, or inline in the
+config, and accepts an SSH key either as a file path or pasted in. Closing the window stops the program. Falls
   back to the default browser if none is installed.
 - `default`: opens the system default browser; stop with Ctrl+C.
 - `none`: only prints the URL.

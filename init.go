@@ -1,81 +1,18 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"golang.org/x/term"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/meeas/go-git-serve/internal/auth"
 	"github.com/meeas/go-git-serve/internal/config"
 	"github.com/meeas/go-git-serve/internal/logx"
 )
-
-var stdin = bufio.NewReader(os.Stdin)
-
-func isTerminal() bool {
-	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
-}
-
-// ask prompts for a line of input, returning def when the answer is empty.
-func ask(label, def string) (string, error) {
-	if def != "" {
-		fmt.Fprintf(os.Stderr, "%s [%s]: ", label, def)
-	} else {
-		fmt.Fprintf(os.Stderr, "%s: ", label)
-	}
-	line, err := stdin.ReadString('\n')
-	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
-		return "", fmt.Errorf("reading input: %w", err)
-	}
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return def, nil
-	}
-	return line, nil
-}
-
-// askUntil repeats ask until check accepts the answer.
-func askUntil(label, def string, check func(string) error) (string, error) {
-	for {
-		v, err := ask(label, def)
-		if err != nil {
-			return "", err
-		}
-		if err := check(v); err != nil {
-			fmt.Fprintf(os.Stderr, "  %v\n", err)
-			continue
-		}
-		return v, nil
-	}
-}
-
-func askChoice(label string, choices []string, def string) (string, error) {
-	return askUntil(fmt.Sprintf("%s (%s)", label, strings.Join(choices, " | ")), def, func(v string) error {
-		for _, c := range choices {
-			if v == c {
-				return nil
-			}
-		}
-		return fmt.Errorf("please enter one of: %s", strings.Join(choices, ", "))
-	})
-}
-
-// promptSecret reads a secret from the terminal without echo.
-func promptSecret(label string) (string, error) {
-	fmt.Fprint(os.Stderr, label)
-	b, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Fprintln(os.Stderr)
-	if err != nil {
-		return "", fmt.Errorf("reading input: %w", err)
-	}
-	return strings.TrimSpace(string(b)), nil
-}
 
 func cmdInit(app string, args []string) error {
 	f := newFlags(app)
@@ -103,12 +40,13 @@ func cmdInit(app string, args []string) error {
 }
 
 // wizard asks for the main settings, starting from base, and writes the
-// config file. Secrets go to the keychain or a separate file, never the config.
+// config file. A token or pasted key can be kept in the config itself
+// (inline), or in the keychain or a separate file.
 func wizard(app string, paths config.Paths, base config.Config) (config.Config, error) {
 	c := base
 	var err error
 
-	if c.Repo.URL, err = askUntil("Repository URL (https://... or git@host:org/repo.git)", c.Repo.URL, func(v string) error {
+	if c.Repo.URL, err = askUntil(askLong, "Repository URL (https://... or git@host:org/repo.git)", c.Repo.URL, func(v string) error {
 		_, err := config.Endpoint(v)
 		return err
 	}); err != nil {
@@ -130,19 +68,17 @@ func wizard(app string, paths config.Paths, base config.Config) (config.Config, 
 	}
 	switch c.Auth.Method {
 	case config.AuthSSHKey:
-		if c.Auth.KeyFile, err = askUntil("SSH private key file", c.Auth.KeyFile, func(v string) error {
-			if v == "" {
-				return errors.New("a key file is required")
-			}
-			_, err := os.Stat(config.ExpandHome(v))
-			return err
-		}); err != nil {
+		c.Auth.TokenFile, c.Auth.Token = "", ""
+		if err := keySetup(app, paths, &c); err != nil {
 			return c, err
 		}
 	case config.AuthToken:
+		c.Auth.KeyFile, c.Auth.Key = "", ""
 		if err := tokenSetup(app, paths, &c); err != nil {
 			return c, err
 		}
+	default:
+		c.Auth.KeyFile, c.Auth.Key, c.Auth.TokenFile, c.Auth.Token = "", "", "", ""
 	}
 
 	if c.Server.Listen, err = ask("Listen address", c.Server.Listen); err != nil {
@@ -163,17 +99,94 @@ func wizard(app string, paths config.Paths, base config.Config) (config.Config, 
 	return c, nil
 }
 
-// tokenSetup asks where the token should live and stores it there.
-func tokenSetup(app string, paths config.Paths, c *config.Config) error {
-	fmt.Fprintln(os.Stderr, "Use a fine-grained personal access token limited to this repository with read-only \"Contents\" permission.")
-	where, err := askChoice("Store the token in", []string{"keychain", "file", "env"}, "keychain")
+// keySetup asks for an SSH key: a path to a key file, or a pasted key kept
+// inline in the config or saved as a file next to it.
+func keySetup(app string, paths config.Paths, c *config.Config) error {
+	how, err := askChoice("Provide the key as", []string{"file", "paste"}, "file")
 	if err != nil {
 		return err
 	}
+	if how == "file" {
+		c.Auth.Key = ""
+		c.Auth.KeyFile, err = askUntil(askLong, "SSH private key file", c.Auth.KeyFile, func(v string) error {
+			if v == "" {
+				return errors.New("a key file is required")
+			}
+			_, err := os.Stat(config.ExpandHome(v))
+			return err
+		})
+		return err
+	}
+
+	var key string
+	for {
+		fmt.Fprintln(os.Stderr, "Paste the private key below; it is shown on screen while pasting.")
+		fmt.Fprintln(os.Stderr, `Input ends at the "-----END ... PRIVATE KEY-----" line.`)
+		if key, err = readPastedKey(); err != nil {
+			if errors.Is(err, errCancelled) {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "  %v\n", err)
+			continue
+		}
+		_, perr := ssh.ParsePrivateKey([]byte(key))
+		var missing *ssh.PassphraseMissingError
+		if errors.As(perr, &missing) {
+			fmt.Fprintf(os.Stderr, "  This key has a passphrase; you'll be asked for it at each start, or set %s.\n", config.EnvPassphrase)
+			fmt.Fprintln(os.Stderr, "  Services need a key without one.")
+			break
+		}
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "  that is not a valid private key (%v); try again\n", perr)
+			continue
+		}
+		break
+	}
+
+	where, err := askChoice("Store the key in", []string{"config", "file"}, "config")
+	if err != nil {
+		return err
+	}
+	if where == "config" {
+		c.Auth.Key, c.Auth.KeyFile = key, ""
+		fmt.Fprintln(os.Stderr, "  the key will be saved inside the config file")
+		return nil
+	}
+	path, err := askLong("Save the key as", filepath.Join(filepath.Dir(paths.ConfigFile), paths.AppName+".key"))
+	if err != nil {
+		return err
+	}
+	full := config.ExpandHome(path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(full, []byte(key), 0o600); err != nil {
+		return fmt.Errorf("writing key file: %w", err)
+	}
+	c.Auth.KeyFile, c.Auth.Key = path, ""
+	fmt.Fprintf(os.Stderr, "  key saved to %s\n", full)
+	return nil
+}
+
+// tokenSetup asks where the token should live and stores it there.
+func tokenSetup(app string, paths config.Paths, c *config.Config) error {
+	fmt.Fprintln(os.Stderr, "Use a fine-grained personal access token limited to this repository with read-only \"Contents\" permission.")
+	where, err := askChoice("Store the token in", []string{"config", "keychain", "file", "env"}, "keychain")
+	if err != nil {
+		return err
+	}
+	c.Auth.Token, c.Auth.TokenFile = "", ""
 	switch where {
 	case "env":
 		fmt.Fprintf(os.Stderr, "Set %s before running %s.\n", config.EnvToken, app)
-		c.Auth.TokenFile = ""
+		return nil
+	case "config":
+		tok, err := readToken()
+		if err != nil {
+			return err
+		}
+		c.Auth.Token = tok
+		fmt.Fprintln(os.Stderr, "  the token will be saved inside the config file")
 		return nil
 	case "keychain":
 		tok, err := readToken()
@@ -182,12 +195,10 @@ func tokenSetup(app string, paths config.Paths, c *config.Config) error {
 		}
 		if err := auth.SetToken(app, tok); err != nil {
 			fmt.Fprintf(os.Stderr, "  could not use the OS keychain (%v); storing in a file instead\n", err)
-		} else {
-			fmt.Fprintln(os.Stderr, "  token saved to the OS keychain")
-			c.Auth.TokenFile = ""
-			return nil
+			return writeTokenFile(paths, c, tok)
 		}
-		return writeTokenFile(paths, c, tok)
+		fmt.Fprintln(os.Stderr, "  token saved to the OS keychain")
+		return nil
 	default:
 		tok, err := readToken()
 		if err != nil {
@@ -198,7 +209,7 @@ func tokenSetup(app string, paths config.Paths, c *config.Config) error {
 }
 
 func readToken() (string, error) {
-	tok, err := promptSecret("Token (input hidden): ")
+	tok, err := promptSecretLong("Token (shown as *)")
 	if err != nil {
 		return "", err
 	}
@@ -209,11 +220,8 @@ func readToken() (string, error) {
 }
 
 func writeTokenFile(paths config.Paths, c *config.Config, tok string) error {
-	def := c.Auth.TokenFile
-	if def == "" {
-		def = filepath.Join(filepath.Dir(paths.ConfigFile), paths.AppName+".token")
-	}
-	path, err := ask("Token file", def)
+	def := filepath.Join(filepath.Dir(paths.ConfigFile), paths.AppName+".token")
+	path, err := askLong("Token file", def)
 	if err != nil {
 		return err
 	}
